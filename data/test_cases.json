@@ -1,0 +1,62 @@
+[
+  {
+    "claim": "Vaccines cause autism",
+    "expected_verdict": "REFUTED",
+    "category": "medical-misinformation",
+    "explanation": "Extensively debunked. The 1998 paper proposing the link was retracted after its data were found to be falsified, and cohort studies covering over a million children find no association."
+  },
+  {
+    "claim": "Coffee consumption reduces the risk of Alzheimer's disease",
+    "expected_verdict": "MIXED",
+    "category": "medical-contested",
+    "explanation": "Observational cohorts report a protective association, but pooled analyses attribute much of it to reverse causation and no randomized trial has confirmed it. A good verdict here is MIXED, not SUPPORTED."
+  },
+  {
+    "claim": "Climate change is primarily caused by human activity",
+    "expected_verdict": "SUPPORTED",
+    "category": "scientific-consensus",
+    "explanation": "Detection and attribution studies assign essentially all post-1950 warming to anthropogenic forcing, with strong agreement across independent lines of evidence."
+  },
+  {
+    "claim": "Intermittent fasting is more effective than calorie restriction for weight loss",
+    "expected_verdict": "REFUTED",
+    "category": "medical-nuance",
+    "explanation": "Trials find intermittent fasting works, but no better than conventional calorie restriction when total intake is matched. Tests whether the system distinguishes 'effective' from 'more effective'."
+  },
+  {
+    "claim": "5G mobile networks cause cancer in nearby residents",
+    "expected_verdict": "REFUTED",
+    "category": "technology-misinformation",
+    "explanation": "No adverse health effect has been causally linked to radiofrequency exposure at the levels 5G base stations emit, which sit far below international safety limits."
+  },
+  {
+    "claim": "The Eiffel Tower is located in the city of Paris",
+    "expected_verdict": "SUPPORTED",
+    "category": "simple-factual",
+    "explanation": "Control case. An unambiguous fact should produce high confidence and low uncertainty; anything else indicates a calibration problem."
+  },
+  {
+    "claim": "Aspirin has no antipyretic effect and does not reduce fever",
+    "expected_verdict": "REFUTED",
+    "category": "counterfactual-negation",
+    "explanation": "The VitaminC failure mode: the claim is a small negation of a true statement. NLI models frequently miss these, which is the main motivation for fine-tuning on counterfactual data."
+  },
+  {
+    "claim": "Regular moderate exercise improves cardiovascular health outcomes",
+    "expected_verdict": "SUPPORTED",
+    "category": "scientific-consensus",
+    "explanation": "Broad agreement across randomized trials and meta-analyses."
+  },
+  {
+    "claim": "Drinking eight glasses of water per day is medically necessary",
+    "expected_verdict": "REFUTED",
+    "category": "popular-myth",
+    "explanation": "A widely repeated guideline with no clinical basis; requirements vary by body size, activity and diet, and much intake comes from food."
+  },
+  {
+    "claim": "The xylophone was invented by Mongolian throat singers in 1823",
+    "expected_verdict": "INSUFFICIENT",
+    "category": "unverifiable",
+    "explanation": "Negative control. A fabricated claim with no relevant literature must return INSUFFICIENT rather than a confident verdict assembled from unrelated sources."
+  }
+]

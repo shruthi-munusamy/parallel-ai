@@ -182,6 +182,37 @@
   font-style: italic;
 }
 
+/* The sentence the NLI model actually scored. Bordered in the stance colour so
+   the badge on the card header is traceable to specific text. */
+.ev-deciding {
+  font-size: 13px;
+  color: var(--text);
+  line-height: 1.7;
+  margin: 0 0 16px;
+  padding: 10px 12px;
+  border-left: 2px solid;
+  background: rgba(255, 255, 255, 0.02);
+}
+
+.ev-deciding-label {
+  display: block;
+  font-size: 10px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--muted);
+  margin-bottom: 6px;
+}
+
+.mock-banner {
+  margin: 0 0 18px;
+  padding: 10px 14px;
+  border: 1px dashed var(--neutral);
+  color: var(--neutral);
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
 .ev-meta {
   display: grid;
   grid-template-columns: 80px 1fr;

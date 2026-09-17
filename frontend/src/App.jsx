@@ -42,6 +42,14 @@ function EvidenceCard({ item, index }) {
       {expanded && (
         <div className="ev-body">
           <p className="ev-excerpt">"{item.excerpt}"</p>
+          {item.stance_sentence && item.stance_sentence !== item.excerpt && (
+            /* The exact sentence the NLI model scored, so the badge above is
+               traceable to text rather than taken on faith. */
+            <p className="ev-deciding" style={{ borderColor: color }}>
+              <span className="ev-deciding-label">scored sentence</span>
+              {item.stance_sentence}
+            </p>
+          )}
           <div className="ev-meta">
             <span>confidence</span>
             <ConfidenceBar value={item.stance_confidence} color={color} />
@@ -149,6 +157,13 @@ export default function App() {
             </div>
 
             <p className="summary">{result.consensus_summary}</p>
+
+            {result.mock_search && (
+              /* A mock-backed result must never be mistaken for a live one. */
+              <div className="mock-banner">
+                offline corpus — set TAVILY_API_KEY in .env for live web search
+              </div>
+            )}
 
             <div className="evidence-list">
               <div className="ev-section-label">EVIDENCE · {result.evidence.length} sources</div>

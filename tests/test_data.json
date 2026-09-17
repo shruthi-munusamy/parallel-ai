@@ -1,0 +1,58 @@
+{
+  "nli_pairs": [
+    {
+      "claim": "Vaccines cause autism",
+      "evidence": "Multiple large-scale studies covering more than 1.2 million children have found no link between vaccines and autism spectrum disorder.",
+      "expected_stance": "REFUTES",
+      "note": "Explicit negation of the claim."
+    },
+    {
+      "claim": "The Eiffel Tower is located in Paris",
+      "evidence": "The Eiffel Tower is a wrought-iron lattice tower on the Champ de Mars in Paris, France.",
+      "expected_stance": "SUPPORTS",
+      "note": "Direct entailment."
+    },
+    {
+      "claim": "Aspirin reduces fever",
+      "evidence": "Aspirin does not reduce fever and has no antipyretic effect whatsoever.",
+      "expected_stance": "REFUTES",
+      "note": "Counterfactual negation - the VitaminC failure mode."
+    },
+    {
+      "claim": "Regular exercise improves cardiovascular health",
+      "evidence": "The Baroque period in European music lasted from approximately 1600 to 1750.",
+      "expected_stance": "NEUTRAL",
+      "note": "Topically unrelated; must not be forced into a directional stance."
+    },
+    {
+      "claim": "Water boils at 100 degrees Celsius at sea level",
+      "evidence": "At standard atmospheric pressure, water reaches its boiling point at 100 degrees Celsius.",
+      "expected_stance": "SUPPORTS",
+      "note": "Paraphrased entailment, no lexical overlap on the key term."
+    }
+  ],
+  "credibility_cases": [
+    {"url": "https://pubmed.ncbi.nlm.nih.gov/12345678/", "tier": "high"},
+    {"url": "https://www.cdc.gov/vaccines/index.html", "tier": "high"},
+    {"url": "https://pmc.ncbi.nlm.nih.gov/articles/PMC123/", "tier": "high"},
+    {"url": "https://www.reuters.com/world/story", "tier": "good"},
+    {"url": "https://www.mayoclinic.org/diseases", "tier": "good"},
+    {"url": "https://en.wikipedia.org/wiki/Fact", "tier": "neutral"},
+    {"url": "https://www.reddit.com/r/science/comments/x", "tier": "low"},
+    {"url": "https://some-random-blog.xyz/post", "tier": "unknown"}
+  ],
+  "search_results": [
+    {
+      "url": "https://www.cdc.gov/mock/a",
+      "title": "CDC statement",
+      "snippet": "Multiple large-scale studies have found no link between vaccines and autism spectrum disorder.",
+      "date": "2024-02-14"
+    },
+    {
+      "url": "https://www.naturalhealthtruth.mock/b",
+      "title": "Alternative view",
+      "snippet": "Vaccines cause autism in genetically vulnerable children, according to independent researchers.",
+      "date": "2023-11-19"
+    }
+  ]
+}

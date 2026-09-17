@@ -6,3 +6,6 @@ checkpoints/
 logs/
 *.egg-info/
 .DS_Store
+frontend/dist/
+frontend/node_modules/
+.pytest_cache/

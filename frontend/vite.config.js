@@ -8,6 +8,7 @@ export default defineConfig({
     proxy: {
       '/verify': 'http://localhost:8000',
       '/health': 'http://localhost:8000',
+      '/cache': 'http://localhost:8000',
     }
   }
 })
