@@ -40,11 +40,16 @@ OUTPUT_DIR   = "./checkpoints/stance_deberta"
 MAX_LENGTH   = 512
 BATCH_SIZE   = 16          # per-device; effective = 16 * grad_accum
 GRAD_ACCUM   = 2           # effective batch size = 32
-EPOCHS       = 3
+EPOCHS       = int(os.getenv("TRAIN_EPOCHS", 3))
 LR           = 2e-5
 WARMUP_RATIO = 0.06
 WEIGHT_DECAY = 0.01
 SEED         = 42
+
+# Caps dataset size for a smoke test on a machine with no GPU (validates the
+# script end to end in minutes instead of hours); unset for the real run.
+MAX_TRAIN_SAMPLES = os.getenv("MAX_TRAIN_SAMPLES")
+MAX_VAL_SAMPLES = os.getenv("MAX_VAL_SAMPLES")
 
 # Label space
 LABEL2ID = {"REFUTES": 0, "NOT ENOUGH INFO": 1, "SUPPORTS": 2}
@@ -55,31 +60,26 @@ ID2LABEL = {v: k for k, v in LABEL2ID.items()}
 def load_fever():
     """
     FEVER: Fact Extraction and VERification
-    Format: claim + flattened evidence sentences → 3-class label
-    We flatten multi-sentence evidence into a single string (joined by space).
+
+    The original "fever" repo on the Hub ships a loading script, which datasets
+    >=3.0 refuses to execute. pietrolesci/nli_fever is the same FEVER data
+    re-hosted as Parquet with gold evidence already joined in, which is also
+    why it needs no reassembly here. Its own field names are inverted from NLI
+    convention -- "premise" there is the claim and "hypothesis" is the
+    evidence -- so they are swapped below to match this file's convention
+    (premise = evidence, hypothesis = claim).
     """
     logger.info("Loading FEVER dataset...")
-    dataset = load_dataset("fever", "v1.0", trust_remote_code=True)
+    dataset = load_dataset("pietrolesci/nli_fever")
 
     def process_fever(example):
-        # Flatten evidence: list of [annot_id, sent_id, wiki_url, sent_text]
-        evidence_texts = []
-        for ann in example.get("evidence", []):
-            for ev in ann:
-                if ev[3]:  # sent_text is index 3
-                    evidence_texts.append(ev[3])
-
-        # Skip examples with no evidence (label = NOT ENOUGH INFO but no text)
-        premise = " ".join(evidence_texts[:5]) if evidence_texts else ""
-
-        label_str = example["label"]
+        label_str = example["fever_gold_label"]
         if label_str not in LABEL2ID:
             return None
-
         return {
-            "premise":    premise,
-            "hypothesis": example["claim"],
-            "label":      LABEL2ID[label_str]
+            "premise":    example["hypothesis"],
+            "hypothesis": example["premise"],
+            "label":      LABEL2ID[label_str],
         }
 
     def filter_and_map(split):
@@ -91,7 +91,7 @@ def load_fever():
         return Dataset.from_list(processed)
 
     train = filter_and_map("train")
-    val   = filter_and_map("paper_dev")
+    val   = filter_and_map("dev")
     logger.info(f"FEVER — train: {len(train)}, val: {len(val)}")
     return train, val
 
@@ -104,7 +104,7 @@ def load_vitaminc():
     Format is already (evidence, claim, label), directly usable.
     """
     logger.info("Loading VitaminC dataset...")
-    dataset = load_dataset("tals/vitaminc", trust_remote_code=True)
+    dataset = load_dataset("tals/vitaminc")
 
     # VitaminC label strings: "SUPPORTS", "REFUTES", "NOT ENOUGH INFO"
     def process_vitaminc(example):
@@ -180,15 +180,25 @@ def main():
     train_dataset = concatenate_datasets([fever_train, vitaminc_train]).shuffle(seed=SEED)
     val_dataset   = concatenate_datasets([fever_val, vitaminc_val]).shuffle(seed=SEED)
 
+    if MAX_TRAIN_SAMPLES:
+        train_dataset = train_dataset.select(range(min(int(MAX_TRAIN_SAMPLES), len(train_dataset))))
+    if MAX_VAL_SAMPLES:
+        val_dataset = val_dataset.select(range(min(int(MAX_VAL_SAMPLES), len(val_dataset))))
+
     logger.info(f"Combined train: {len(train_dataset)}, val: {len(val_dataset)}")
 
     # Tokenizer + model
+    # dtype is explicit because from_pretrained's default ("auto") picks up
+    # this checkpoint's stored float16 weights, which produces NaN logits
+    # from the first forward pass on both CPU and MPS -- fp16 mixed precision
+    # is handled separately below via TrainingArguments(fp16=...).
     tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME)
     model = AutoModelForSequenceClassification.from_pretrained(
         MODEL_NAME,
         num_labels=3,
         id2label=ID2LABEL,
         label2id=LABEL2ID,
+        dtype=torch.float32,
     )
 
     tokenize_fn = build_tokenize_fn(tokenizer)
@@ -207,9 +217,9 @@ def main():
         warmup_ratio=WARMUP_RATIO,
         weight_decay=WEIGHT_DECAY,
         eval_strategy="steps",
-        eval_steps=1000,
+        eval_steps=int(os.getenv("EVAL_STEPS", 1000)),
         save_strategy="steps",
-        save_steps=1000,
+        save_steps=int(os.getenv("EVAL_STEPS", 1000)),
         load_best_model_at_end=True,
         metric_for_best_model="macro_f1",
         greater_is_better=True,
@@ -225,7 +235,7 @@ def main():
         args=training_args,
         train_dataset=train_dataset,
         eval_dataset=val_dataset,
-        tokenizer=tokenizer,
+        processing_class=tokenizer,
         compute_metrics=compute_metrics,
         callbacks=[EarlyStoppingCallback(early_stopping_patience=3)],
     )

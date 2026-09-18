@@ -10,7 +10,7 @@
 #SBATCH --output=logs/train_%j.out
 #SBATCH --error=logs/train_%j.err
 #SBATCH --mail-type=END,FAIL
-#SBATCH --mail-user=YOUR_EMAIL@northeastern.edu
+#SBATCH --mail-user=munusamy.s@northeastern.edu
 
 # ── Environment setup ────────────────────────────────────────────────────────
 # Check available modules with: module avail python
