@@ -18,7 +18,7 @@
 #   bash backend/training/setup_explorer_env.sh
 # to create the claim-verify env this script activates below.
 
-module load anaconda3/2023.07  # or whatever version Explorer has
+module load anaconda3/2024.06
 conda activate claim-verify
 
 # Verify GPU is visible
