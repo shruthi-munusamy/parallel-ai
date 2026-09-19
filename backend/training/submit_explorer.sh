@@ -13,8 +13,10 @@
 #SBATCH --mail-user=munusamy.s@northeastern.edu
 
 # ── Environment setup ────────────────────────────────────────────────────────
-# Check available modules with: module avail python
-# Adjust these lines to match what Explorer has
+# One-time, before the first submission: module load anaconda3/... (check
+# available versions with `module avail python`) then
+#   bash backend/training/setup_explorer_env.sh
+# to create the claim-verify env this script activates below.
 
 module load anaconda3/2023.07  # or whatever version Explorer has
 conda activate claim-verify

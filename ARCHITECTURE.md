@@ -416,7 +416,16 @@ A defensible number requires:
 3. End-to-end verdict accuracy against published fact-checker rulings
    (PolitiFact, Snopes), which measures the *pipeline*, not just the classifier.
 
-`backend/training/train_stance.py` implements (1) and (2). **It has not been run.**
+`backend/training/train_stance.py` implements (1) and (2). It was written but
+never actually run until 2026-09-18, when a smoke test on a 200-example slice
+surfaced four bugs that would have failed the real job hours in: a FEVER
+loader dead against `datasets>=3.0`, a missing `sentencepiece` dependency, a
+renamed `Trainer` argument, and a model that silently loaded in float16 and
+produced NaN loss from the first step. All four are fixed and the script now
+completes cleanly end to end on a tiny local slice — **but the real
+FEVER+VitaminC fine-tune itself has still not been run.** That requires a GPU
+this project doesn't have locally; see `backend/training/submit_explorer.sh`
+and `setup_explorer_env.sh` for submitting it to a SLURM GPU cluster.
 
 ---
 

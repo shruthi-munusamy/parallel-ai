@@ -282,7 +282,7 @@ is the dominant failure mode of NLI models on real fact-checking. That failure
 mode is case 7 in `data/test_cases.json`.
 
 ```bash
-pip install datasets accelerate
+pip install datasets accelerate sentencepiece
 python -m backend.training.train_stance
 ```
 
@@ -290,8 +290,21 @@ Drop the resulting checkpoint at `./checkpoints/stance_deberta` and the stance
 detector picks it up automatically — including its label ordering, which is read
 from the checkpoint's own `id2label` rather than assumed.
 
-**This has not been run yet.** No fine-tuned metrics are reported anywhere in this
-repo because none have been measured.
+The full run needs a GPU; on a SLURM cluster (e.g. Northeastern's
+Explorer/Discovery), run `bash backend/training/setup_explorer_env.sh` once to
+create the conda environment, then `sbatch backend/training/submit_explorer.sh`.
+
+Before a long unattended run, smoke-test on a slice — this is also how three
+dependency/API breaks and a silent float16-NaN-loss bug were caught before
+they could burn hours of GPU time:
+
+```bash
+MAX_TRAIN_SAMPLES=200 MAX_VAL_SAMPLES=60 TRAIN_EPOCHS=1 EVAL_STEPS=3 \
+  python -m backend.training.train_stance
+```
+
+**The real fine-tune has not been run yet.** No fine-tuned metrics are reported
+anywhere in this repo because none have been measured.
 
 ---
 
