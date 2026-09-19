@@ -101,10 +101,13 @@ class StanceDetector:
 
         self.label_map = self._build_label_map()
         self.mc_samples = max(1, config.MC_SAMPLES)
+        # See config.STANCE_TEMPERATURE: 1.0 until calibrate_temperature.py has
+        # been run against this specific checkpoint.
+        self.temperature = config.STANCE_TEMPERATURE
 
         logger.info(
-            "Stance detector ready on %s | labels=%s | MC samples=%d",
-            self.device, self.label_map, self.mc_samples,
+            "Stance detector ready on %s | labels=%s | MC samples=%d | temperature=%.3f",
+            self.device, self.label_map, self.mc_samples, self.temperature,
         )
 
     def _build_label_map(self) -> dict[int, str]:
@@ -178,7 +181,8 @@ class StanceDetector:
                 torch.manual_seed(config.MC_SEED)
                 for _ in range(self.mc_samples):
                     logits = self.model(**inputs).logits
-                    samples.append(torch.softmax(logits, dim=-1).cpu().numpy())
+                    scaled = logits / self.temperature
+                    samples.append(torch.softmax(scaled, dim=-1).cpu().numpy())
         finally:
             # Restored even if a pass raises, so one failure cannot leave the
             # shared model stochastic for every later request.

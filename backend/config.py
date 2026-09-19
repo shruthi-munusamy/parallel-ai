@@ -57,6 +57,14 @@ class Config:
     # from the verdict rather than counted as weak evidence.
     UNRELATED_THRESHOLD: float = float(os.getenv("UNRELATED_THRESHOLD", 0.40))
     MAX_PREMISE_CHARS: int = int(os.getenv("MAX_PREMISE_CHARS", 500))
+    # Softmax temperature (logits are divided by this before softmax). 1.0 is a
+    # no-op -- MC dropout gives a relative uncertainty signal, not a calibrated
+    # probability, so "confidence": 0.9 does not mean "correct 90% of the time"
+    # until this is set. Produced by backend/training/calibrate_temperature.py
+    # against whichever checkpoint is currently active; must be recalibrated
+    # whenever STANCE_CHECKPOINT changes, since a different model has a
+    # different confidence/accuracy relationship.
+    STANCE_TEMPERATURE: float = float(os.getenv("STANCE_TEMPERATURE", 1.0))
 
     # ── Retrieval ─────────────────────────────────────────────────────────────
     FETCH_CONCURRENCY: int = int(os.getenv("FETCH_CONCURRENCY", 10))

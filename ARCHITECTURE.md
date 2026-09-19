@@ -436,9 +436,13 @@ it trains robustness to counterfactual edits — *"aspirin reduces fever"* vs
 *"aspirin does not reduce fever"* — which is the dominant real-world failure mode
 and is case 7 in `data/test_cases.json`.
 
-**Calibration.** MC dropout gives a *relative* uncertainty signal, not a
-calibrated probability. Temperature scaling on a held-out set would make
-`confidence` mean what it claims to.
+**Calibration.** ~~MC dropout gives a *relative* uncertainty signal, not a
+calibrated probability.~~ Done 2026-09-19 for the zero-shot fallback
+checkpoint: `backend/training/calibrate_temperature.py` fits a softmax
+temperature against held-out FEVER+VitaminC (ECE 0.387 → 0.078; see README's
+Calibration section). Needs to be re-run once the real fine-tuned checkpoint
+lands — `STANCE_TEMPERATURE` is specific to one model's confidence/accuracy
+relationship, not a property of the task.
 
 **Credibility.** Replace the static tier list with NewsGuard ratings or a
 classifier trained on Media Bias/Fact Check labels. The interface does not change:

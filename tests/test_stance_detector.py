@@ -87,6 +87,30 @@ class TestPredictions:
         assert result["stance"] in {"SUPPORTS", "REFUTES", "NEUTRAL", "UNRELATED"}
         assert pytest.approx(sum(result["raw_scores"].values()), abs=1e-4) == 1.0
 
+
+class TestTemperatureScaling:
+    async def test_temperature_above_one_softens_confidence_without_flipping_stance(
+        self, stance_detector, monkeypatch
+    ):
+        """
+        Calibration (config.STANCE_TEMPERATURE) must move confidence toward 0.5
+        without changing which class wins -- that is the whole point of
+        temperature scaling versus retraining.
+        """
+        claim, evidence = (
+            "The Earth is flat",
+            "The Earth is an oblate spheroid, as confirmed by satellite measurements "
+            "and direct observation; it is not flat.",
+        )
+        monkeypatch.setattr(stance_detector, "temperature", 1.0)
+        baseline = await stance_detector.predict(claim, evidence)
+
+        monkeypatch.setattr(stance_detector, "temperature", 4.0)
+        softened = await stance_detector.predict(claim, evidence)
+
+        assert softened["stance"] == baseline["stance"]
+        assert softened["stance_confidence"] < baseline["stance_confidence"]
+
     async def test_empty_input_list_returns_empty(self, stance_detector):
         assert await stance_detector.predict_pairs("claim", []) == []
         assert await stance_detector.predict_batch("claim", []) == []
