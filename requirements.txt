@@ -25,7 +25,9 @@ pytest-asyncio>=0.23
 httpx>=0.26                # required by fastapi.testclient
 
 # ── Fine-tuning only (backend/training/train_stance.py) ──────────────────────
-# Not needed to run the API. Install with: pip install datasets accelerate sentencepiece
+# Not needed to run the API. Install with:
+#   pip install datasets accelerate sentencepiece protobuf
 # datasets>=2.18
 # accelerate>=0.27
 # sentencepiece>=0.2        # deberta-v3's tokenizer has no fast-tokenizer fallback
+# protobuf>=4               # required alongside sentencepiece on some transformers/tokenizers versions

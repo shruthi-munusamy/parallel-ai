@@ -28,7 +28,10 @@ else
 fi
 
 conda run -n "$ENV_NAME" pip install -r requirements.txt
-conda run -n "$ENV_NAME" pip install datasets accelerate sentencepiece
+# protobuf is needed alongside sentencepiece for deberta-v3's tokenizer on
+# this transformers/tokenizers version combo (confirmed missing on Explorer's
+# anaconda3/2024.06 -- "SentencePieceExtractor requires the protobuf library").
+conda run -n "$ENV_NAME" pip install datasets accelerate sentencepiece protobuf
 
 echo "Environment '$ENV_NAME' ready. Verify GPU + CUDA torch build with:"
 echo "  conda run -n $ENV_NAME python -c \"import torch; print(torch.__version__, torch.cuda.is_available())\""

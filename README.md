@@ -306,7 +306,7 @@ is the dominant failure mode of NLI models on real fact-checking. That failure
 mode is case 7 in `data/test_cases.json`.
 
 ```bash
-pip install datasets accelerate sentencepiece
+pip install datasets accelerate sentencepiece protobuf
 python -m backend.training.train_stance
 ```
 
