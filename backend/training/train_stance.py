@@ -172,6 +172,24 @@ def compute_metrics(eval_pred):
 def main():
     torch.manual_seed(SEED)
 
+    # Logged up front, unconditionally: a driver/CUDA-build mismatch makes
+    # torch.cuda.is_available() silently return False, which would run the
+    # whole job on CPU and blow through the walltime limit with barely any
+    # progress. This is cheaper to check here than in a separate interactive
+    # debug session.
+    cuda_ok = torch.cuda.is_available()
+    logger.info(
+        "torch=%s cuda_build=%s cuda_available=%s",
+        torch.__version__, torch.version.cuda, cuda_ok,
+    )
+    if cuda_ok:
+        logger.info("GPU: %s", torch.cuda.get_device_name(0))
+    else:
+        logger.warning(
+            "No CUDA GPU visible to torch -- training will run on CPU and is "
+            "very unlikely to finish within the job's time limit."
+        )
+
     # Load and combine datasets
     fever_train, fever_val   = load_fever()
     vitaminc_train, vitaminc_val = load_vitaminc()
@@ -205,6 +223,12 @@ def main():
     train_dataset = train_dataset.map(tokenize_fn, batched=True, remove_columns=["premise", "hypothesis"])
     val_dataset   = val_dataset.map(tokenize_fn,   batched=True, remove_columns=["premise", "hypothesis"])
 
+    # warmup_ratio was removed (not just deprecated) in newer transformers
+    # versions than this was first written against -- compute the equivalent
+    # step count by hand instead of depending on either name existing.
+    steps_per_epoch = -(-len(train_dataset) // (BATCH_SIZE * GRAD_ACCUM))  # ceil div
+    warmup_steps = int(WARMUP_RATIO * steps_per_epoch * EPOCHS)
+
     # Training arguments
     # fp16 enabled for GPU; automatically ignored if no CUDA
     training_args = TrainingArguments(
@@ -214,7 +238,7 @@ def main():
         per_device_eval_batch_size=32,
         gradient_accumulation_steps=GRAD_ACCUM,
         learning_rate=LR,
-        warmup_ratio=WARMUP_RATIO,
+        warmup_steps=warmup_steps,
         weight_decay=WEIGHT_DECAY,
         eval_strategy="steps",
         eval_steps=int(os.getenv("EVAL_STEPS", 1000)),
