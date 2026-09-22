@@ -217,6 +217,13 @@ def main():
         id2label=ID2LABEL,
         label2id=LABEL2ID,
         dtype=torch.float32,
+        # microsoft/deberta-v3-base only ships pytorch_model.bin on its main
+        # revision; newer transformers refuses to torch.load that format
+        # below torch 2.6 (CVE-2025-32434) regardless of whether the load
+        # would actually be safe. Forcing safetensors makes it fetch the
+        # community PR that adds a safetensors copy instead of raising, and
+        # avoids torch.load's real security exposure entirely as a bonus.
+        use_safetensors=True,
     )
 
     tokenize_fn = build_tokenize_fn(tokenizer)
