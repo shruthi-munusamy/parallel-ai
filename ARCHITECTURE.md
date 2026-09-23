@@ -401,48 +401,68 @@ boundary rather than all of them; `T=1` to drop uncertainty entirely.
 
 ## 10. Evaluation status
 
-**No accuracy claims are made in this repository**, because none have been
-measured against a standard benchmark.
+The stance detector has a real, measured accuracy number as of 2026-09-23:
+**86.9% accuracy, 0.838 macro F1** on 1000 held-out FEVER+VitaminC examples
+(REFUTES 0.870, NOT ENOUGH INFO 0.717, SUPPORTS 0.927), fine-tuned on
+Northeastern's Explorer SLURM cluster (Tesla V100), stopped early by
+`EarlyStoppingCallback` around epoch 1.2 of 3. This satisfies (1) below. It
+is **not yet a defensible end-to-end benchmark number**, which requires:
 
-The 8/10 in the README is a regression check on ten claims whose expected
-verdicts are the author's reading of the evidence, against a corpus the author
-wrote. It detects breakage. It is not an accuracy metric and should not be quoted
-as one.
-
-A defensible number requires:
-
-1. FEVER or VitaminC dev-set evaluation of the stance detector, per class.
+1. ~~FEVER or VitaminC dev-set evaluation of the stance detector, per class.~~
+   Done — see above.
 2. A baseline comparison — zero-shot MNLI vs fine-tuned — on the same split.
+   Also measured: the zero-shot fallback checkpoint scores 57.9% accuracy on
+   the same held-out slice, so fine-tuning is a +29-point improvement, not
+   noise.
 3. End-to-end verdict accuracy against published fact-checker rulings
-   (PolitiFact, Snopes), which measures the *pipeline*, not just the classifier.
+   (PolitiFact, Snopes), which measures the *pipeline*, not just the
+   classifier. **Not done.** The 8/10 in the README is still a regression
+   check on ten claims whose expected verdicts are the author's reading of
+   the evidence, against a corpus the author wrote — it detects breakage, not
+   accuracy, and should not be quoted as one.
 
-`backend/training/train_stance.py` implements (1) and (2). It was written but
-never actually run until 2026-09-18, when a smoke test on a 200-example slice
-surfaced four bugs that would have failed the real job hours in: a FEVER
-loader dead against `datasets>=3.0`, a missing `sentencepiece` dependency, a
-renamed `Trainer` argument, and a model that silently loaded in float16 and
-produced NaN loss from the first step. All four are fixed and the script now
-completes cleanly end to end on a tiny local slice — **but the real
-FEVER+VitaminC fine-tune itself has still not been run.** That requires a GPU
-this project doesn't have locally; see `backend/training/submit_explorer.sh`
-and `setup_explorer_env.sh` for submitting it to a SLURM GPU cluster.
+Getting here took four rounds of bugs, none of which showed up until the
+script was actually run against real infrastructure:
+
+- **Local smoke test (2026-09-18)**, 200-example slice on this machine (no
+  GPU): a FEVER loader dead against `datasets>=3.0` (fixed by switching to
+  `pietrolesci/nli_fever`, a Parquet re-host), a missing `sentencepiece`
+  dependency, a renamed `Trainer` argument, and a model that silently loaded
+  in float16 and produced NaN loss from the first step.
+- **Real Explorer run (2026-09-20 to 09-23)**, four more bugs surfaced only
+  under the actual cluster environment: `conda activate` silently failing in
+  a non-interactive batch script (needed `conda.sh` sourced explicitly, and
+  `set -e` to fail loudly instead of running against the wrong Python); a
+  missing `protobuf` dependency alongside `sentencepiece`; `warmup_ratio`
+  fully removed (not just deprecated) on the cluster's newer transformers
+  version; a CUDA build/driver mismatch (`torch` defaulted to a cu130 build,
+  but the node's driver only supports CUDA 12.3, so `torch.cuda.is_available()`
+  silently returned `False` and one full job trained uselessly on CPU before
+  anyone noticed); and finally a security-guard regression in transformers
+  that refuses `torch.load` of `pytorch_model.bin` below torch 2.6 — worked
+  around with `use_safetensors=True` rather than fighting that version
+  constraint against the CUDA one.
+
+Full details in `backend/training/train_stance.py`,
+`backend/training/setup_explorer_env.sh`, and `backend/training/submit_explorer.sh`.
 
 ---
 
 ## 11. What would come next
 
-**Accuracy.** Run the FEVER + VitaminC fine-tune. VitaminC is the important half:
-it trains robustness to counterfactual edits — *"aspirin reduces fever"* vs
-*"aspirin does not reduce fever"* — which is the dominant real-world failure mode
-and is case 7 in `data/test_cases.json`.
+**Accuracy.** ~~Run the FEVER + VitaminC fine-tune.~~ Done 2026-09-23: 86.9%
+accuracy / 0.838 macro F1 on held-out FEVER+VitaminC — see §10. What's left is
+the harder half: end-to-end verdict accuracy against published fact-checker
+rulings (PolitiFact, Snopes), which measures the whole pipeline rather than
+the classifier in isolation.
 
 **Calibration.** ~~MC dropout gives a *relative* uncertainty signal, not a
 calibrated probability.~~ Done 2026-09-19 for the zero-shot fallback
-checkpoint: `backend/training/calibrate_temperature.py` fits a softmax
-temperature against held-out FEVER+VitaminC (ECE 0.387 → 0.078; see README's
-Calibration section). Needs to be re-run once the real fine-tuned checkpoint
-lands — `STANCE_TEMPERATURE` is specific to one model's confidence/accuracy
-relationship, not a property of the task.
+checkpoint, then redone 2026-09-23 against the fine-tuned checkpoint (ECE
+0.049 → 0.021 — better calibrated out of the box than the fallback model was
+even after scaling; see README's Calibration section). Must be re-run again
+any time `STANCE_CHECKPOINT` changes — `STANCE_TEMPERATURE` is specific to
+one model's confidence/accuracy relationship, not a property of the task.
 
 **Credibility.** Replace the static tier list with NewsGuard ratings or a
 classifier trained on Media Bias/Fact Check labels. The interface does not change:

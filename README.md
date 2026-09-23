@@ -134,11 +134,11 @@ sentences**: a source refutes a claim if *any* sentence in it refutes the claim,
 even when the surrounding text is background. Averaging would let three neutral
 sentences of context bury the one sentence carrying the evidence.
 
-On the ten demo claims (measured pre-calibration, `STANCE_TEMPERATURE=1.0`)
-this moved agreement from 4/10 to 8/10. It also made the system explainable —
-the deciding sentence is returned as `stance_sentence` and displayed in the
-UI, so every badge is traceable to specific text. With calibration on
-(current default), agreement is 7/10 — see below.
+On the ten demo claims (measured pre-calibration, `STANCE_TEMPERATURE=1.0`,
+zero-shot checkpoint) this moved agreement from 4/10 to 8/10. It also made
+the system explainable — the deciding sentence is returned as
+`stance_sentence` and displayed in the UI, so every badge is traceable to
+specific text.
 
 ---
 
@@ -162,31 +162,52 @@ Separately, softmax confidence from an untuned model is systematically
 overconfident regardless of MC dropout. `backend/training/calibrate_temperature.py`
 fits a single softmax temperature (Guo et al. 2017) against a held-out
 FEVER+VitaminC sample — a scalar that divides logits before softmax, which
-softens confidence without changing which class wins. Fit on 2026-09-19
-against the zero-shot fallback checkpoint, 1000 held-out examples:
+softens confidence without changing which class wins. Fit on 2026-09-23
+against the fine-tuned checkpoint (below), 1000 held-out examples:
 
 | | Before | After |
 |---|---|---|
-| Expected Calibration Error | 0.387 | 0.078 |
+| Expected Calibration Error | 0.049 | 0.021 |
 
-`STANCE_TEMPERATURE=5.6708` is the current default (`.env`). This value is
-specific to the zero-shot fallback checkpoint and **must be recalibrated**
-once a fine-tuned checkpoint replaces it — a different model has a different
-confidence/accuracy relationship.
+For comparison, the zero-shot fallback checkpoint measured ECE 0.387 → 0.078
+on the same test — fine-tuning made the model dramatically better calibrated
+on its own, before any temperature scaling at all.
+
+`STANCE_TEMPERATURE=1.49` is the current default (`.env`). This value is
+specific to the current `STANCE_CHECKPOINT` and **must be recalibrated**
+whenever that checkpoint is retrained or replaced — a different model has a
+different confidence/accuracy relationship.
 
 ---
 
 ## Measured performance
 
-CPU (M-series), offline corpus, `MC_SAMPLES=5`:
+**Stance detector accuracy on held-out FEVER+VitaminC** (the actual benchmark
+number, not the demo regression check): fine-tuned DeBERTa-v3-base,
+1000-example validation sample, measured 2026-09-23 —
 
 | Metric | Value |
 |---|---|
-| Mean latency, 10 demo claims | **1.48 s** |
-| p95 latency | **3.16 s** |
+| Accuracy | **86.9%** |
+| Macro F1 | **0.838** |
+| F1, REFUTES | 0.870 |
+| F1, NOT ENOUGH INFO | 0.717 |
+| F1, SUPPORTS | 0.927 |
+
+Trained on Northeastern's Explorer SLURM cluster (Tesla V100), stopped early
+by `EarlyStoppingCallback` around epoch 1.2 of 3 once macro F1 stopped
+improving. Full run details in `backend/training/train_stance.py` and
+`ARCHITECTURE.md` §10.
+
+CPU (M-series), offline corpus, `MC_SAMPLES=5`, fine-tuned checkpoint:
+
+| Metric | Value |
+|---|---|
+| Mean latency, 10 demo claims | **0.95 s** |
+| p95 latency | **1.51 s** |
 | Cached response | **< 1 ms** |
 | Model load at startup | ~2 s (after first download) |
-| Verdict agreement, 10 demo claims | **7/10** |
+| Verdict agreement, 10 demo claims | **8/10** |
 
 Stance stage in isolation, 30 passages:
 
@@ -198,13 +219,10 @@ Stance stage in isolation, 30 passages:
 
 Two caveats, stated plainly:
 
-- **The 7/10 is not a benchmark.** Ten claims, labels are the author's reading of
-  the evidence, and the offline corpus was written by the author. It is a
-  regression check, not an accuracy measurement. A real number requires FEVER or
-  VitaminC evaluation — see below. (It dropped from 8/10 to 7/10 when
-  calibration was turned on: softer, more honest confidence means more
-  borderline evidence now falls below `UNRELATED_THRESHOLD` and yields
-  `INSUFFICIENT` instead of a confident guess — see Calibration above.)
+- **The 8/10 is not a benchmark** — the FEVER+VitaminC numbers above are. Ten
+  demo claims, labels are the author's reading of the evidence, and the
+  offline corpus was written by the author. It is a regression check against
+  known cases, not an accuracy measurement.
 - **Latency excludes live page fetching.** With `TAVILY_API_KEY` set, stage 3
   fetches real pages; that adds network time bounded by `FETCH_TIMEOUT_S` (8s
   default) and `FETCH_CONCURRENCY` (10), not by the number of sources.
@@ -314,7 +332,8 @@ Drop the resulting checkpoint at `./checkpoints/stance_deberta` and the stance
 detector picks it up automatically — including its label ordering, which is read
 from the checkpoint's own `id2label` rather than assumed. Re-run
 `backend/training/calibrate_temperature.py` afterward — `STANCE_TEMPERATURE`
-is fit per checkpoint, and `5.6708` is only valid for the zero-shot fallback.
+is fit per checkpoint, and the current default is only valid for the specific
+checkpoint currently in `./checkpoints/stance_deberta`.
 
 The full run needs a GPU; on a SLURM cluster (e.g. Northeastern's
 Explorer/Discovery), run `bash backend/training/setup_explorer_env.sh` once to
@@ -329,8 +348,11 @@ MAX_TRAIN_SAMPLES=200 MAX_VAL_SAMPLES=60 TRAIN_EPOCHS=1 EVAL_STEPS=3 \
   python -m backend.training.train_stance
 ```
 
-**The real fine-tune has not been run yet.** No fine-tuned metrics are reported
-anywhere in this repo because none have been measured.
+**Run 2026-09-23** on Northeastern's Explorer SLURM cluster (Tesla V100):
+86.9% accuracy / 0.838 macro F1 on 1000 held-out FEVER+VitaminC examples,
+stopped early around epoch 1.2 of 3 — see Measured performance above and
+`ARCHITECTURE.md` §10 for the full numbers and what a defensible benchmark
+number would still require (published fact-checker rulings, not just FEVER).
 
 ---
 
