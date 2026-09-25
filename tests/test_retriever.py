@@ -89,6 +89,66 @@ class TestSemanticRanking:
         assert retriever._rank_passages("claim", [], top_k=3) == []
 
 
+class TestReranking:
+    def test_ranks_relevant_passage_first(self, retriever):
+        candidates = [
+            {"text": "The cafeteria on the third floor serves lunch between eleven and two.", "excerpt": ""},
+            {"text": "Participants in the highest quartile of coffee consumption showed a markedly lower incidence of dementia.", "excerpt": ""},
+            {"text": "The building's architecture was renovated in 1974 by a local firm.", "excerpt": ""},
+        ]
+        reranked = retriever._rerank_passages("Coffee reduces dementia risk", candidates, top_k=1)
+        assert len(reranked) == 1
+        assert "quartile" in reranked[0]["text"]
+
+    def test_top_k_respected_and_scored(self, retriever):
+        candidates = [
+            {"text": f"Passage number {i} containing several words of content here.", "excerpt": ""}
+            for i in range(10)
+        ]
+        reranked = retriever._rerank_passages("a claim under test", candidates, top_k=3)
+        assert len(reranked) == 3
+        assert all("rerank_score" in r for r in reranked)
+        scores = [r["rerank_score"] for r in reranked]
+        assert scores == sorted(scores, reverse=True)
+
+    def test_preserves_original_candidate_fields(self, retriever):
+        candidates = [{"text": "Some passage text here.", "excerpt": "Some passage...", "relevance": 0.5}]
+        reranked = retriever._rerank_passages("claim", candidates, top_k=1)
+        assert reranked[0]["excerpt"] == "Some passage..."
+        assert reranked[0]["relevance"] == 0.5
+
+    def test_empty_candidates(self, retriever):
+        assert retriever._rerank_passages("claim", [], top_k=3) == []
+
+    def test_top_k_larger_than_pool(self, retriever):
+        candidates = [{"text": "Only one candidate passage here.", "excerpt": ""}]
+        reranked = retriever._rerank_passages("claim", candidates, top_k=10)
+        assert len(reranked) == 1
+
+    def test_reranker_failure_degrades_to_pool_order(self, retriever, monkeypatch):
+        """A broken reranker should cost precision, not the whole source."""
+        def broken_predict(pairs):
+            raise RuntimeError("model error")
+
+        monkeypatch.setattr(retriever.reranker, "predict", broken_predict)
+        candidates = [{"text": f"Passage {i}.", "excerpt": ""} for i in range(5)]
+        reranked = retriever._rerank_passages("claim", candidates, top_k=2)
+        assert reranked == candidates[:2]
+
+    async def test_disabled_reranker_is_skipped_in_extract_evidence(self, retriever, monkeypatch):
+        """A None reranker (RERANK_ENABLED=False, or a failed load) must not be called."""
+        monkeypatch.setattr(retriever, "reranker", None)
+
+        async def fake_fetch_all(urls):
+            return [ARTICLE for _ in urls]
+
+        monkeypatch.setattr(retriever, "_fetch_all", fake_fetch_all)
+        sources = [{"url": "https://example.com/a", "title": "Study", "snippet": "s"}]
+        passages = await retriever.extract_evidence("Coffee reduces dementia risk", sources, top_k=2)
+        assert 1 <= len(passages) <= 2
+        assert all("rerank_score" not in p for p in passages)
+
+
 class TestExtractEvidence:
     async def test_end_to_end_with_stubbed_fetch(self, retriever, monkeypatch):
         async def fake_fetch_all(urls):

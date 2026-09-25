@@ -199,15 +199,19 @@ by `EarlyStoppingCallback` around epoch 1.2 of 3 once macro F1 stopped
 improving. Full run details in `backend/training/train_stance.py` and
 `ARCHITECTURE.md` §10.
 
-CPU (M-series), offline corpus, `MC_SAMPLES=5`, fine-tuned checkpoint:
+CPU (M-series), offline corpus, `MC_SAMPLES=5`, fine-tuned checkpoint, cross-encoder reranking on:
 
 | Metric | Value |
 |---|---|
-| Mean latency, 10 demo claims | **0.95 s** |
-| p95 latency | **1.51 s** |
+| Mean latency, 10 demo claims | **1.78 s** |
+| p95 latency | **3.37 s** |
 | Cached response | **< 1 ms** |
 | Model load at startup | ~2 s (after first download) |
 | Verdict agreement, 10 demo claims | **8/10** |
+
+Mean latency was 0.95s before reranking was added (`RERANK_ENABLED=false`) —
+the reranker's cost is a deliberate accuracy/latency tradeoff (§5.5 in
+ARCHITECTURE.md), not a regression.
 
 Stance stage in isolation, 30 passages:
 
@@ -309,6 +313,7 @@ worth knowing:
 | `SENTENCE_LEVEL_STANCE` | `true` | Per-sentence scoring (see above) |
 | `UNRELATED_THRESHOLD` | `0.40` | Below this, a passage is dropped as `UNRELATED` |
 | `FETCH_CONCURRENCY` | `10` | Parallel page fetches |
+| `RERANK_ENABLED` | `true` | Cross-encoder reranking over bi-encoder candidates; `false` skips it |
 | `STANCE_CHECKPOINT` | `./checkpoints/stance_deberta` | Fine-tuned weights; falls back to zero-shot when absent |
 | `STANCE_TEMPERATURE` | `1.0` | Softmax temperature; see Calibration above. Recalibrate when `STANCE_CHECKPOINT` changes |
 | `CACHE_TTL_S` | `3600` | Result cache lifetime |

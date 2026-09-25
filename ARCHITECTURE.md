@@ -159,11 +159,42 @@ coherent argument. Stuffing to the token limit dilutes the stance signal.
 ### 5.4 Semantic ranking
 
 Passages are ranked against the claim by cosine similarity over `all-MiniLM-L6-v2`
-embeddings, keeping the top *k*.
+embeddings, keeping a wider candidate pool than the final count needed (§5.5).
 
 Keyword matching fails the central case: a claim about *"intermittent fasting"*
 must match a passage discussing *"time-restricted eating"*, which shares no
 content words. That specific pair is asserted in `tests/test_retriever.py`.
+
+### 5.5 Cross-encoder reranking
+
+A bi-encoder embeds the claim and each passage independently, so it can only
+compare embeddings after the fact — the claim never gets to attend to the
+passage's specific tokens. That is a good cheap first pass and a mediocre
+final ranking. `RERANKER_MODEL` (default `cross-encoder/ms-marco-MiniLM-L-12-v2`)
+scores `(claim, passage)` pairs jointly through one transformer pass instead,
+which is far more accurate but too slow to run over every passage from every
+source.
+
+Two stages get both properties: the bi-encoder ranks all candidates per source
+and keeps `PASSAGES_PER_SOURCE x RERANK_POOL_MULTIPLIER`, then the
+cross-encoder reranks only that pool and keeps the final `PASSAGES_PER_SOURCE`.
+Reranker failures degrade to the bi-encoder's own order rather than dropping
+the source, matching the rest of the pipeline's degrade-not-fail contract.
+`RERANK_ENABLED=false` skips this stage entirely.
+
+**A specific checkpoint bug, worth recording:** the more commonly cited
+`cross-encoder/ms-marco-MiniLM-L-6-v2` crashes with a SIGBUS on forward pass on
+at least one dev machine (Apple Silicon, torch 2.10) — reproducible with a bare
+`transformers` forward pass outside this codebase entirely, and specific to
+that exact checkpoint (`bert-base-uncased` and `ms-marco-MiniLM-L-12-v2` both
+load and run cleanly). Confirmed not a NaN-dtype issue (parameters load as
+float32); root cause not pursued further given a working alternative existed.
+If `RERANKER_MODEL` is ever changed back to `L-6-v2`, expect this.
+
+Measured impact on the 10 demo claims: mean latency 0.95s → 1.78s. Verdict
+agreement unchanged at 8/10 on this small sample — a reranker's value is in
+evidence *quality* (does the passage actually address the claim), which this
+sample is too small to detect a difference in.
 
 ---
 
@@ -468,8 +499,13 @@ one model's confidence/accuracy relationship, not a property of the task.
 classifier trained on Media Bias/Fact Check labels. The interface does not change:
 source dict in, scalar in [0,1] out.
 
-**Retrieval.** Add a cross-encoder reranker over the top-k MiniLM results.
-Bi-encoder similarity is a good first pass and a mediocre final ranking.
+**Retrieval.** ~~Add a cross-encoder reranker over the top-k MiniLM results.
+Bi-encoder similarity is a good first pass and a mediocre final ranking.~~
+Done 2026-09-23 — see §5.5. Still open: the bi-encoder/cross-encoder pool
+sizes (`PASSAGES_PER_SOURCE`, `RERANK_POOL_MULTIPLIER`) were chosen to hold
+latency roughly flat, not tuned against a labeled relevance set — there's no
+measurement yet of whether a wider pool would improve final evidence quality
+enough to justify the added latency.
 
 **Claim-worthiness.** Detect and reject opinions and predictions before the
 pipeline runs, instead of processing them as falsifiable factual claims.

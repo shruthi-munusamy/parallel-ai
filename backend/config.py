@@ -71,6 +71,22 @@ class Config:
     FETCH_TIMEOUT_S: float = float(os.getenv("FETCH_TIMEOUT_S", 8.0))
     MAX_PAGE_CHARS: int = int(os.getenv("MAX_PAGE_CHARS", 10000))
     PASSAGES_PER_SOURCE: int = int(os.getenv("PASSAGES_PER_SOURCE", 3))
+    # Bi-encoder cosine similarity is a good first pass and a mediocre final
+    # ranking: it embeds claim and passage independently, so it cannot model
+    # interactions between them. The cross-encoder reranks a wider bi-encoder
+    # candidate pool (RERANK_POOL_MULTIPLIER x PASSAGES_PER_SOURCE, per source)
+    # by scoring (claim, passage) jointly, then keeps the final
+    # PASSAGES_PER_SOURCE -- more accurate, but too slow to run over every
+    # passage from every source, which is why it only sees the pre-filtered
+    # pool rather than all candidates.
+    RERANK_ENABLED: bool = _flag("RERANK_ENABLED", True)
+    # Not ms-marco-MiniLM-L-6-v2, the more commonly cited default: that specific
+    # checkpoint crashes with SIGBUS on forward pass on at least one dev
+    # machine (Apple Silicon, torch 2.10), reproducible outside this codebase
+    # with a bare transformers forward pass. L-12 is confirmed working and is
+    # generally rated higher-quality anyway, just marginally slower.
+    RERANKER_MODEL: str = os.getenv("RERANKER_MODEL", "cross-encoder/ms-marco-MiniLM-L-12-v2")
+    RERANK_POOL_MULTIPLIER: int = int(os.getenv("RERANK_POOL_MULTIPLIER", 3))
 
     # ── Cache ─────────────────────────────────────────────────────────────────
     CACHE_TTL_S: float = float(os.getenv("CACHE_TTL_S", 3600))

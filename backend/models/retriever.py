@@ -1,15 +1,25 @@
 """
 retriever.py - Passage extraction and semantic ranking.
 
-Two stages per source:
+Three stages per source:
   1. Fetch the page and strip it to readable text.
   2. Split into passages and rank them against the claim by embedding cosine
-     similarity, keeping the top-k.
+     similarity (bi-encoder), keeping a wider candidate pool than needed.
+  3. Rerank that pool with a cross-encoder, keeping the final top-k.
 
 Why semantic ranking rather than keyword matching: a claim about "intermittent
 fasting" must match a passage discussing "time-restricted eating", which shares
 no content words. Cosine similarity over sentence embeddings captures that;
 BM25 or substring matching does not.
+
+Why rerank at all when the bi-encoder already ranks by similarity: a
+bi-encoder embeds the claim and each passage independently, so it can only
+compare their embeddings after the fact -- it never lets the claim and
+passage attend to each other. A cross-encoder scores them jointly through
+one transformer pass, which is more accurate but too slow to run over every
+passage from every source. Two stages get both: the bi-encoder's cheap recall
+over everything, then the cross-encoder's expensive precision over its
+pre-filtered pool.
 
 Why fetch the page at all when search already returns a snippet: snippets are
 one or two sentences chosen for relevance to the *query*, not for stance. The
@@ -23,7 +33,7 @@ import logging
 import aiohttp
 import torch
 from bs4 import BeautifulSoup
-from sentence_transformers import SentenceTransformer, util
+from sentence_transformers import CrossEncoder, SentenceTransformer, util
 
 from backend.config import config
 
@@ -49,7 +59,23 @@ class EvidenceRetriever:
         logger.info("Loading retriever embeddings: %s", model_name)
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
         self.embedder = SentenceTransformer(model_name, device=self.device)
-        logger.info("Retriever ready on %s", self.device)
+
+        # Reranker is optional: a load failure degrades to bi-encoder-only
+        # ranking rather than taking down retrieval entirely.
+        self.reranker: CrossEncoder | None = None
+        if config.RERANK_ENABLED:
+            try:
+                self.reranker = CrossEncoder(config.RERANKER_MODEL, device=self.device)
+            except Exception as e:
+                logger.warning(
+                    "Reranker %s failed to load, falling back to bi-encoder-only "
+                    "ranking: %s", config.RERANKER_MODEL, e,
+                )
+
+        logger.info(
+            "Retriever ready on %s | reranker=%s",
+            self.device, config.RERANKER_MODEL if self.reranker else "disabled",
+        )
 
     async def extract_evidence(
         self,
@@ -93,7 +119,9 @@ class EvidenceRetriever:
                 continue
 
             candidates = self._split_into_passages(content)
-            ranked = self._rank_passages(claim, candidates, top_k)
+            pool_size = top_k * config.RERANK_POOL_MULTIPLIER if self.reranker else top_k
+            pool = self._rank_passages(claim, candidates, pool_size)
+            ranked = self._rerank_passages(claim, pool, top_k) if self.reranker else pool
             if not ranked and snippet:
                 ranked = [{"text": snippet, "excerpt": _excerpt(snippet)}]
             for passage in ranked:
@@ -228,6 +256,33 @@ class EvidenceRetriever:
             # Ranking failure should cost relevance, not the whole source.
             logger.error("Passage ranking failed: %s", e)
             return [{"text": p, "excerpt": _excerpt(p)} for p in passages[:top_k]]
+
+    def _rerank_passages(self, claim: str, candidates: list[dict], top_k: int) -> list[dict]:
+        """
+        Rerank a bi-encoder candidate pool with a cross-encoder.
+
+        A cross-encoder scores (claim, passage) jointly through one transformer
+        pass, rather than comparing independently-encoded embeddings -- more
+        accurate at judging whether a specific passage actually addresses the
+        claim, but too slow to run over every passage from every source. It
+        only ever sees `candidates`, the bi-encoder's own pre-filtered pool,
+        never the raw passage list.
+        """
+        if not candidates:
+            return []
+        try:
+            pairs = [(claim, c["text"]) for c in candidates]
+            scores = self.reranker.predict(pairs)
+            order = sorted(range(len(candidates)), key=lambda i: scores[i], reverse=True)
+            return [
+                {**candidates[i], "rerank_score": float(scores[i])}
+                for i in order[:top_k]
+            ]
+        except Exception as e:
+            # Same degradation contract as _rank_passages: a broken reranker
+            # costs precision, not the whole source.
+            logger.error("Reranking failed: %s", e)
+            return candidates[:top_k]
 
 
 def _excerpt(text: str, limit: int = 280) -> str:
