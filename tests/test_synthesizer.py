@@ -6,9 +6,14 @@ example is the system's central design claim: credibility-weighted aggregation
 reaches a different (and better) answer than averaging stance confidence.
 """
 
+from datetime import datetime, timezone
+
 import pytest
 
+from backend.models.synthesizer import TEMPORAL_HALF_LIFE_YEARS, TEMPORAL_MIN_WEIGHT, recency_weight
 from tests.conftest import make_passage
+
+NOW = datetime(2026, 1, 1, tzinfo=timezone.utc)
 
 
 class TestCredibilityWeighting:
@@ -118,6 +123,61 @@ class TestVerdicts:
         evidence = [make_passage("SUPPORTS", 0.0, 0.0)]
         result = await synthesizer.synthesize("test claim", evidence)
         assert result["verdict"] == "INSUFFICIENT"
+
+
+class TestRecencyWeight:
+    def test_missing_date_scores_full_weight(self):
+        """Silence about publication date is not evidence of staleness."""
+        assert recency_weight(None) == 1.0
+        assert recency_weight("") == 1.0
+
+    def test_unparseable_date_scores_full_weight(self):
+        assert recency_weight("not a date", now=NOW) == 1.0
+
+    def test_todays_date_scores_full_weight(self):
+        assert recency_weight("2026-01-01", now=NOW) == pytest.approx(1.0)
+
+    def test_future_date_scores_full_weight_not_a_bonus(self):
+        assert recency_weight("2030-01-01", now=NOW) == 1.0
+
+    def test_half_life_lands_at_one_half(self):
+        n_years_ago = NOW.replace(year=NOW.year - int(TEMPORAL_HALF_LIFE_YEARS))
+        weight = recency_weight(n_years_ago.date().isoformat(), now=NOW)
+        assert weight == pytest.approx(0.5, abs=0.02)
+
+    def test_very_old_date_floors_rather_than_vanishing(self):
+        ancient = "1990-01-01"
+        assert recency_weight(ancient, now=NOW) == pytest.approx(TEMPORAL_MIN_WEIGHT)
+
+    def test_monotonically_decreasing_with_age(self):
+        recent = recency_weight("2025-06-01", now=NOW)
+        older = recency_weight("2020-01-01", now=NOW)
+        assert recent > older
+
+
+class TestTemporalWeightingInSynthesis:
+    async def test_recent_source_outweighs_stale_source_of_equal_strength(self, synthesizer):
+        """
+        Same confidence, same credibility, same stance strength on both sides --
+        only publication date differs. Recency alone must be able to swing it,
+        the same way credibility alone already can.
+        """
+        evidence = [
+            make_passage("REFUTES", confidence=0.85, credibility=0.8, date="2026-01-01"),
+            make_passage("SUPPORTS", confidence=0.85, credibility=0.8, date="1990-01-01"),
+        ]
+        result = await synthesizer.synthesize("test claim", evidence)
+        assert result["verdict"] == "REFUTED"
+        assert result["refute_ratio"] > result["support_ratio"]
+
+    async def test_missing_dates_do_not_change_existing_behaviour(self, synthesizer):
+        """Regression guard: every pre-existing test omits `date`, and must still pass unaffected."""
+        evidence = [
+            make_passage("REFUTES", confidence=0.60, credibility=0.95, url="https://pubmed.ncbi.nlm.nih.gov/1"),
+            make_passage("SUPPORTS", confidence=0.85, credibility=0.35, url="https://blog.example/1"),
+        ]
+        result = await synthesizer.synthesize("test claim", evidence)
+        assert result["verdict"] == "REFUTED"
 
 
 class TestUncertaintyPropagation:

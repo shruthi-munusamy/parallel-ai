@@ -112,13 +112,18 @@ Most NLI fact-checkers treat source quality as a gate ("drop anything below
 credibility multiplies evidence weight during aggregation:
 
 ```
-weight_i = stance_confidence_i × credibility_i
+weight_i = stance_confidence_i × credibility_i × recency_i
 ```
 
 A PubMed paper refuting at 0.60 confidence (0.95 × 0.60 = **0.57**) outweighs a
 blog supporting at 0.85 (0.35 × 0.85 = **0.30**). Averaging confidence alone
 would return the opposite verdict. This case is asserted directly in
 `tests/test_synthesizer.py`.
+
+`recency_i` is an exponential half-life decay on publication date (5-year
+half-life, floored at 0.3 so an old source is dampened, never discarded — an
+old source can still be correct about a stable fact). Missing or unparseable
+dates score 1.0, not a penalty. See `ARCHITECTURE.md` §7.4.
 
 ### Sentence-level stance scoring
 

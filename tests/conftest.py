@@ -51,6 +51,7 @@ def make_passage(
     credibility: float = 0.9,
     uncertainty: float = 0.05,
     url: str = "https://example.com/a",
+    date: str | None = None,
 ) -> dict:
     """Builds a synthesized passage so synthesizer tests need no model."""
     return {
@@ -62,4 +63,5 @@ def make_passage(
         "stance_confidence": confidence,
         "credibility_score": credibility,
         "uncertainty": uncertainty,
+        "date": date,
     }

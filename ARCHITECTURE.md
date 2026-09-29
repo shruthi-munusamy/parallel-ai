@@ -384,6 +384,31 @@ verdict: `confidence × (1 − 0.5 × uncertainty)`.
 Capped at half so that total model instability halves a verdict's confidence but
 never erases a real evidence majority.
 
+### 7.4 Temporal weighting
+
+Publication dates flow through the pipeline from stage 2 onward but were
+unused until 2026-09-29: `w_i = stance_confidence_i × credibility_i` had no
+notion that a 2015 source and a 2025 source should not carry equal weight for
+a claim about an evolving situation. `_recency_weight` adds a third factor —
+exponential half-life decay, `0.5 ** (age_years / TEMPORAL_HALF_LIFE_YEARS)`
+— with two guards against the obvious ways a decay term goes wrong:
+
+- **Missing/unparseable dates score 1.0, not a penalty.** Web retrieval
+  frequently can't recover a reliable publication date; treating that
+  absence as staleness would make the pipeline worse specifically on the
+  passages it already struggles to date, for no real signal gained.
+- **Floored at `TEMPORAL_MIN_WEIGHT` (0.3), not decayed to zero.** Age alone
+  does not make a stable fact wrong — a 1990 source is still the right answer
+  for "Paris is the capital of France." This is a dampener on old evidence,
+  not a filter that discards it.
+
+`TEMPORAL_HALF_LIFE_YEARS = 5.0` is a single global constant, which is the
+known limitation here: it cannot distinguish a claim about a historically
+stable fact from one about a fast-moving topic (a stock price, an ongoing
+investigation, current officeholders), where 5 years is arguably still too
+generous. Claim-specific temporal sensitivity would need the claim's own
+subject matter classified first — not attempted here.
+
 ---
 
 ## 8. Cross-cutting concerns
@@ -540,6 +565,9 @@ Done 2026-09-29 — see §2.1. Rule-based and deliberately conservative; an LLM
 pass (folded into the existing `QueryDecomposer` call) would catch more
 subtle cases once a funded Anthropic key is available.
 
-**Temporal reasoning.** Publication dates are carried through the pipeline but
-never used. For claims about evolving situations, a 2015 source and a 2025 source
-should not carry equal weight.
+**Temporal reasoning.** ~~Publication dates are carried through the pipeline
+but never used. For claims about evolving situations, a 2015 source and a
+2025 source should not carry equal weight.~~ Done 2026-09-29 — see §7.4.
+Still open: a single global half-life can't tell a stable fact from a
+fast-moving topic; that needs the claim's subject matter classified first,
+not attempted here.

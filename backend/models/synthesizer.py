@@ -9,11 +9,22 @@ The contribution:
   outweighs a weak source agreeing with it, without either being discarded.
 
 Formally, per passage i:
-    w_i = stance_confidence_i * credibility_i
+    w_i = stance_confidence_i * credibility_i * recency_i
 
     support_mass = sum(w_i : stance_i == SUPPORTS)
     refute_mass  = sum(w_i : stance_i == REFUTES)
     neutral_mass = sum(w_i : stance_i == NEUTRAL)
+
+recency_i is an exponential half-life decay on the source's publication date
+(see recency_weight): a 2015 source and a 2025 source should not carry equal
+weight for a claim about an evolving situation. It is a dampener, not a
+filter -- floored at TEMPORAL_MIN_WEIGHT rather than decaying toward zero,
+because an old source can still be the correct answer for a claim about a
+historically stable fact ("Paris is the capital of France"), and a missing or
+unparseable date scores 1.0 (no penalty) rather than being treated as
+maximally stale. A single global half-life cannot distinguish "stable fact"
+from "evolving situation" -- that would need claim-specific temporal
+sensitivity, which is future work (see ARCHITECTURE.md).
 
 Worked example of why this differs from averaging confidence:
     PubMed  (cred 0.95) says REFUTES   at confidence 0.60 -> w = 0.570
@@ -35,6 +46,7 @@ is unstable" does not read the same as genuine consensus.
 """
 
 import logging
+from datetime import datetime, timezone
 
 import numpy as np
 
@@ -50,7 +62,41 @@ CONTESTED_FLOOR = 0.35
 # and there is not enough directional evidence to call it either way.
 MIN_CONTESTED_SHARE = 0.20
 
+# Years for a source's temporal weight to decay to half. 5 is a deliberately
+# generic middle ground: short enough to matter for fast-moving topics, long
+# enough not to unfairly punish a source that is old but still correct.
+TEMPORAL_HALF_LIFE_YEARS = 5.0
+# Floor on the decay, not a filter: even a very old source keeps some weight,
+# since age alone does not make a stable fact wrong.
+TEMPORAL_MIN_WEIGHT = 0.3
+
 EPSILON = 1e-9
+
+
+def recency_weight(date_str: str | None, now: datetime | None = None) -> float:
+    """
+    Exponential half-life decay by source age. Missing or unparseable dates
+    score 1.0 (no penalty) -- silence about when something was published is
+    not evidence that it is stale, and punishing it would make the pipeline
+    worse at exactly the passages retrieval already struggles to date.
+    """
+    if not date_str:
+        return 1.0
+    try:
+        published = datetime.fromisoformat(date_str.strip())
+    except (ValueError, TypeError):
+        return 1.0
+
+    if published.tzinfo is None:
+        published = published.replace(tzinfo=timezone.utc)
+    now = now or datetime.now(timezone.utc)
+
+    age_years = (now - published).days / 365.25
+    if age_years <= 0:
+        return 1.0  # future or same-day dates: no decay, not extra credit
+
+    decay = 0.5 ** (age_years / TEMPORAL_HALF_LIFE_YEARS)
+    return max(decay, TEMPORAL_MIN_WEIGHT)
 
 
 def _empty_result(summary: str) -> dict:
@@ -78,7 +124,9 @@ class EvidenceSynthesizer:
 
         def mass(stance: str) -> float:
             return sum(
-                float(e.get("stance_confidence", 0.0)) * float(e.get("credibility_score", 0.5))
+                float(e.get("stance_confidence", 0.0))
+                * float(e.get("credibility_score", 0.5))
+                * recency_weight(e.get("date"))
                 for e in relevant
                 if e.get("stance") == stance
             )

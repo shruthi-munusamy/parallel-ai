@@ -36,7 +36,7 @@ from backend.models.query_decomposer import QueryDecomposer
 from backend.models.retriever import EvidenceRetriever
 from backend.models.stance_detector import StanceDetector
 from backend.models.credibility_scorer import CredibilityScorer
-from backend.models.synthesizer import EvidenceSynthesizer
+from backend.models.synthesizer import EvidenceSynthesizer, recency_weight
 from backend.services.search_service import SearchService
 from backend.services.cache_service import CacheService
 
@@ -264,7 +264,10 @@ async def run_pipeline(claim: str, max_sources: int) -> dict:
     ]
     # Strongest evidence first: weight is exactly the quantity the synthesizer
     # aggregated, so the ordering matches what actually drove the verdict.
-    evidence.sort(key=lambda e: e.stance_confidence * e.credibility_score, reverse=True)
+    evidence.sort(
+        key=lambda e: e.stance_confidence * e.credibility_score * recency_weight(e.publication_date),
+        reverse=True,
+    )
 
     return {
         "verdict": synthesis["verdict"],
