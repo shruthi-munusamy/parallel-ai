@@ -168,32 +168,14 @@ def print_summary(records: list[dict], total_elapsed: float) -> None:
 
 async def run(claims: list[dict], max_sources: int) -> int:
     # Imported here so --help stays instant instead of loading torch first.
-    from backend.main import run_pipeline, pipeline
-    from backend.models.query_decomposer import QueryDecomposer
-    from backend.models.retriever import EvidenceRetriever
-    from backend.models.stance_detector import StanceDetector
-    from backend.models.credibility_scorer import CredibilityScorer
-    from backend.models.synthesizer import EvidenceSynthesizer
-    from backend.services.search_service import SearchService
-    from backend.services.cache_service import CacheService
+    from backend.main import build_pipeline, run_pipeline, pipeline
 
     print(c("\n  Neural Claim Verification — demo", BOLD))
     print(c("  Loading models (first run downloads ~750MB)...", DIM))
 
     load_start = time.perf_counter()
 
-    def build():
-        return {
-            "decomposer": QueryDecomposer(),
-            "retriever": EvidenceRetriever(),
-            "stance": StanceDetector(),
-            "credibility": CredibilityScorer(),
-            "synthesizer": EvidenceSynthesizer(),
-            "search": SearchService(),
-            "cache": CacheService(),
-        }
-
-    pipeline.update(await asyncio.to_thread(build))
+    pipeline.update(await asyncio.to_thread(build_pipeline))
     print(c(f"  Ready in {time.perf_counter() - load_start:.1f}s", DIM))
 
     stance = pipeline["stance"]

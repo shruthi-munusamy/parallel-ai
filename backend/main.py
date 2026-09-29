@@ -2,6 +2,7 @@
 main.py - FastAPI server for neural claim verification.
 
 Pipeline, in order:
+  0. ClaimWorthinessChecker -> rejects non-factual input before any work runs
   1. QueryDecomposer    -> LLM-generated sub-queries (LLM, or rule-based fallback)
   2. SearchService      -> concurrent web search over those queries
   3. EvidenceRetriever  -> concurrent page fetch, semantic passage ranking
@@ -30,6 +31,7 @@ from pydantic import BaseModel, Field, field_validator
 
 from backend.config import config
 from backend.utils.logging_config import configure_logging, set_request_id
+from backend.models.claim_worthiness import ClaimWorthinessChecker
 from backend.models.query_decomposer import QueryDecomposer
 from backend.models.retriever import EvidenceRetriever
 from backend.models.stance_detector import StanceDetector
@@ -49,25 +51,35 @@ VERSION = "2.1.0"
 pipeline: dict[str, Any] = {}
 
 
+def build_pipeline() -> dict[str, Any]:
+    """
+    Construct every pipeline stage.
+
+    The single call site for "what's in the pipeline" -- demo_script.py used
+    to duplicate this dict, which meant a new stage (claim_worthiness) landed
+    in main.py's lifespan but not there, and demo_script.py crashed with a
+    bare KeyError until someone noticed. Constructors are synchronous and
+    CPU-bound; callers should run this via asyncio.to_thread so the event
+    loop stays responsive while weights load.
+    """
+    return {
+        "worthiness": ClaimWorthinessChecker(),
+        "decomposer": QueryDecomposer(),
+        "retriever": EvidenceRetriever(),
+        "stance": StanceDetector(),
+        "credibility": CredibilityScorer(),
+        "synthesizer": EvidenceSynthesizer(),
+        "search": SearchService(),
+        "cache": CacheService(),
+    }
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     started = time.perf_counter()
     logger.info("Loading models (first run downloads weights, this is slow)...")
 
-    # Constructors are synchronous and CPU-bound; off-loading them lets the
-    # event loop start serving /health while weights load.
-    def build() -> dict[str, Any]:
-        return {
-            "decomposer": QueryDecomposer(),
-            "retriever": EvidenceRetriever(),
-            "stance": StanceDetector(),
-            "credibility": CredibilityScorer(),
-            "synthesizer": EvidenceSynthesizer(),
-            "search": SearchService(),
-            "cache": CacheService(),
-        }
-
-    pipeline.update(await asyncio.to_thread(build))
+    pipeline.update(await asyncio.to_thread(build_pipeline))
     logger.info("Pipeline ready in %.1fs", time.perf_counter() - started)
 
     yield
@@ -104,7 +116,7 @@ async def attach_request_id(request: Request, call_next):
 
 # ── Schemas ──────────────────────────────────────────────────────────────────
 
-Verdict = Literal["SUPPORTED", "REFUTED", "MIXED", "INSUFFICIENT"]
+Verdict = Literal["SUPPORTED", "REFUTED", "MIXED", "INSUFFICIENT", "UNCHECKABLE"]
 Stance = Literal["SUPPORTS", "REFUTES", "NEUTRAL", "UNRELATED"]
 
 
@@ -166,7 +178,27 @@ class VerificationResponse(BaseModel):
 
 
 async def run_pipeline(claim: str, max_sources: int) -> dict:
-    """Stages 1-6. Returns the response payload minus timing metadata."""
+    """Stages 0-6. Returns the response payload minus timing metadata."""
+    # 0. Claim worthiness -- rejects non-factual input before any search runs,
+    # rather than letting it fall through to a confident-looking verdict on
+    # evidence that was never going to support or refute an opinion anyway.
+    worthiness = pipeline["worthiness"].check(claim)
+    if not worthiness["checkable"]:
+        logger.info("Stage 0 worthiness: rejected (%s)", worthiness["category"])
+        return {
+            "verdict": "UNCHECKABLE",
+            "confidence": 0.0,
+            "uncertainty": 0.0,
+            "evidence": [],
+            "consensus_summary": worthiness["reason"],
+            "sources_analyzed": 0,
+            "passages_analyzed": 0,
+            "support_ratio": 0.0,
+            "refute_ratio": 0.0,
+            "neutral_ratio": 0.0,
+            "mock_search": False,
+        }
+
     stage_start = time.perf_counter()
 
     # 1. Decompose

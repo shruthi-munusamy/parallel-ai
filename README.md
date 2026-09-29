@@ -72,11 +72,14 @@ python -m pytest -m "not slow"  # skip the ones that load model weights
 ```
 claim
   │
+  ├─ 0. ClaimWorthinessChecker ── rejects opinions/predictions/questions
+  │                               before any search runs
   ├─ 1. QueryDecomposer ──── Claude generates 5 distinct sub-queries,
   │                          deliberately including refutation-seeking ones
   ├─ 2. SearchService ────── all sub-queries run concurrently, merged by URL
   ├─ 3. EvidenceRetriever ── pages fetched concurrently, split into passages,
-  │                          ranked against the claim by embedding similarity
+  │                          ranked by embedding similarity, then reranked by
+  │                          a cross-encoder for the final selection
   ├─ 4. StanceDetector ───── DeBERTa NLI per sentence, MC-dropout uncertainty
   ├─ 5. CredibilityScorer ── domain authority prior  (runs concurrently with 4)
   └─ 6. Synthesizer ─────── credibility-weighted verdict
@@ -245,6 +248,7 @@ Every stage degrades instead of failing:
 | Page fetch fails / times out | Falls back to the search snippet for that source |
 | Stance model raises | `NEUTRAL` at uncertainty 1.0 — the synthesizer reads it as no signal |
 | No usable evidence | `INSUFFICIENT` at confidence 0.0, never a guess |
+| Claim is an opinion, prediction, or question | `UNCHECKABLE` at confidence 0.0 — rejected before any search runs |
 
 Covered by `TestResilience` in `tests/test_integration.py`.
 
@@ -267,7 +271,7 @@ Interactive docs at `/docs`.
 ```jsonc
 {
   "claim": "Vaccines cause autism",
-  "verdict": "REFUTED",              // SUPPORTED | REFUTED | MIXED | INSUFFICIENT
+  "verdict": "REFUTED",              // SUPPORTED | REFUTED | MIXED | INSUFFICIENT | UNCHECKABLE
   "confidence": 0.82,                // uncertainty-discounted
   "uncertainty": 0.14,               // mean MC-dropout spread
   "evidence": [

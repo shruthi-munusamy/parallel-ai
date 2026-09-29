@@ -108,6 +108,57 @@ class TestVerdictCorrectness:
         assert body["evidence"] == []
 
 
+class TestClaimWorthiness:
+    def test_opinion_short_circuits_before_search(self, client, monkeypatch):
+        """
+        A non-factual claim must be rejected before stage 1, not processed
+        into a confident-looking verdict on evidence that was never relevant.
+        """
+        called = False
+
+        async def fail_if_called(*args, **kwargs):
+            nonlocal called
+            called = True
+            raise AssertionError("decomposer must not run for a non-checkable claim")
+
+        from backend import main as main_module
+        monkeypatch.setattr(main_module.pipeline["decomposer"], "decompose", fail_if_called)
+
+        body = client.post(
+            "/verify",
+            json={"claim": "I think remote work is more productive than office work", "max_sources": 5},
+        ).json()
+
+        assert called is False
+        assert body["verdict"] == "UNCHECKABLE"
+        assert body["confidence"] == 0.0
+        assert body["evidence"] == []
+        assert body["sources_analyzed"] == 0
+        assert "opinion" in body["consensus_summary"].lower()
+
+    def test_prediction_is_rejected(self, client):
+        body = client.post(
+            "/verify",
+            json={"claim": "AI will replace all programmers by 2030", "max_sources": 5},
+        ).json()
+        assert body["verdict"] == "UNCHECKABLE"
+
+    def test_question_is_rejected(self, client):
+        body = client.post(
+            "/verify",
+            json={"claim": "Do vaccines cause autism in children?", "max_sources": 5},
+        ).json()
+        assert body["verdict"] == "UNCHECKABLE"
+
+    def test_ordinary_claim_is_unaffected(self, client):
+        """The worthiness check must not become a new source of false rejection."""
+        body = client.post(
+            "/verify",
+            json={"claim": "Vaccines cause autism", "max_sources": 5},
+        ).json()
+        assert body["verdict"] != "UNCHECKABLE"
+
+
 class TestValidation:
     @pytest.mark.parametrize(
         "payload",

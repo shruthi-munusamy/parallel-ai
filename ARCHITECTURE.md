@@ -31,6 +31,10 @@ verdict.
                     claim
                       │
     ┌─────────────────▼──────────────────┐
+    │ 0. ClaimWorthinessChecker          │  regex against opinion/prediction/
+    │    rule-based, no model            │  question framing; rejects before
+    └─────────────────┬──────────────────┘  any search runs
+    ┌─────────────────▼──────────────────┐
     │ 1. QueryDecomposer                 │  Claude Haiku → 5 sub-queries
     │    LLM, rule-based fallback        │  includes refutation-seeking angles
     └─────────────────┬──────────────────┘
@@ -40,7 +44,7 @@ verdict.
     └─────────────────┬──────────────────┘
     ┌─────────────────▼──────────────────┐
     │ 3. EvidenceRetriever               │  bounded-concurrency page fetch
-    │    MiniLM embeddings               │  split → rank by cosine → top-k
+    │    MiniLM + cross-encoder rerank   │  split → bi-encoder pool → CE rerank
     └─────────────────┬──────────────────┘
           ┌───────────┴───────────┐         ← independent, run concurrently
     ┌─────▼──────────┐   ┌────────▼───────┐
@@ -57,6 +61,29 @@ verdict.
 Stages 4 and 5 are independent — one reads passage text, the other reads the
 URL — so they overlap under a single `asyncio.gather` rather than running back to
 back.
+
+### 2.1 Claim worthiness (stage 0)
+
+Every stage from 1 onward assumes the input is a falsifiable factual claim.
+Without a check first, "Pizza is the best food" or "AI will replace all
+programmers by 2030" still produce a confident-looking `SUPPORTED`/`REFUTED`
+verdict — the pipeline had no way to represent *"this was never a checkable
+claim"*, which is a worse failure than `INSUFFICIENT`: it looks like the
+system did the work and found evidence, when the actual error was upstream of
+any evidence gathering.
+
+`backend/models/claim_worthiness.py` rejects three categories by regex —
+questions (trailing `?`), opinions (first-person or prescriptive framing:
+*"I think"*, *"we should"*), and speculative predictions (*"will replace"*,
+*"is expected to"*) — deliberately narrow ones, since a false positive here
+(rejecting a real claim) costs the user an answer entirely, while a false
+negative just falls through to the existing `INSUFFICIENT` path. Rule-based
+rather than an LLM call for the same reason `credibility_scorer.py` is a
+static tier list rather than a trained classifier: it needs no funded API key
+(this project's Anthropic key currently has no credit balance — see below),
+and the interface (claim in, checkable/reason out) will not need to change if
+it is later replaced by something smarter, likely folded into the existing
+`QueryDecomposer` LLM call rather than a second round trip.
 
 ---
 
@@ -507,8 +534,11 @@ latency roughly flat, not tuned against a labeled relevance set — there's no
 measurement yet of whether a wider pool would improve final evidence quality
 enough to justify the added latency.
 
-**Claim-worthiness.** Detect and reject opinions and predictions before the
-pipeline runs, instead of processing them as falsifiable factual claims.
+**Claim-worthiness.** ~~Detect and reject opinions and predictions before the
+pipeline runs, instead of processing them as falsifiable factual claims.~~
+Done 2026-09-29 — see §2.1. Rule-based and deliberately conservative; an LLM
+pass (folded into the existing `QueryDecomposer` call) would catch more
+subtle cases once a funded Anthropic key is available.
 
 **Temporal reasoning.** Publication dates are carried through the pipeline but
 never used. For claims about evolving situations, a 2015 source and a 2025 source

@@ -14,6 +14,9 @@ const VERDICT_LABEL = {
   REFUTED:      { label: 'REFUTED',      color: 'var(--refute)'  },
   MIXED:        { label: 'MIXED',        color: 'var(--neutral)' },
   INSUFFICIENT: { label: 'INSUFFICIENT', color: 'var(--muted)'   },
+  // Distinct from INSUFFICIENT: this claim was never a checkable factual
+  // assertion (an opinion, prediction, or question) -- no search ever ran.
+  UNCHECKABLE:  { label: 'NOT A FACTUAL CLAIM', color: 'var(--muted)' },
 }
 
 function ConfidenceBar({ value, color }) {
