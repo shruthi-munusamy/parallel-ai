@@ -1,25 +1,38 @@
 """
 credibility_scorer.py - Source credibility as a Bayesian prior on evidence weight.
 
-Design decision: rule-based rather than learned, because
-  1. no labeled credibility dataset exists at the scale this would need,
-  2. domain authority is stable and well understood, and
-  3. the ML capacity in this system belongs in the stance detector -- credibility
-     is a prior, not the prediction.
-
-Production would replace the tier lists with NewsGuard ratings or a classifier
-trained on Media Bias/Fact Check and Ad Fontes labels. The interface would not
-change: a source dict in, a scalar in [0, 1] out.
+Design decision: hand-curated tiers for the positive end, a real open dataset
+for the negative end. NewsGuard itself is a paid partnership, not something an
+open-source project can depend on, and the obvious open alternative (CRED-1;
+see data/cred1_compact.json and CRED1_ATTRIBUTION below) turns out to cover
+almost no reliable sources by its own documentation (n=8) -- it is built from
+OpenSources.co and Iffy.news, both of which exist specifically to flag
+unreliable/fake/conspiracy domains, not to rate good ones. So the positive
+tiers (HIGH/GOOD/NEUTRAL_CREDIBILITY below) stay hand-curated, and CRED-1 only
+extends the *low* end, which is exactly where a hand-typed 12-domain list
+(LOW_CREDIBILITY, all social/UGC platforms) previously had no coverage at all
+for actual misinformation domains -- a site like infowars.com fell through
+every tier to the 0.40 "unknown" default, scoring *above* Reddit's 0.25.
 
 The score is consumed by the synthesizer as a multiplier on stance confidence,
 so it must be a graded weight rather than a pass/fail gate -- a low-credibility
 source still contributes, just less.
 """
 
+import functools
+import json
 import logging
+from pathlib import Path
 from urllib.parse import urlparse
 
 logger = logging.getLogger(__name__)
+
+CRED1_PATH = Path(__file__).resolve().parent.parent.parent / "data" / "cred1_compact.json"
+CRED1_ATTRIBUTION = (
+    "Domain credibility data from CRED-1 by Alexander Loth (CC BY 4.0, "
+    "https://github.com/aloth/cred-1), built from OpenSources.co (CC BY 4.0) "
+    "by Melissa Zimdars et al. and the Iffy.news Index (MIT)."
+)
 
 # Tier 1: peer-reviewed literature, government and intergovernmental bodies.
 HIGH_CREDIBILITY = {
@@ -79,9 +92,40 @@ _TLD_SCORES = (
 )
 
 
+@functools.lru_cache(maxsize=1)
+def _load_cred1() -> dict[str, float]:
+    """
+    domain -> credibility_score (0.0-1.0, CRED-1's own composite), loaded once
+    and shared across every CredibilityScorer instance. A missing/corrupt file
+    degrades to an empty mapping rather than failing scorer construction --
+    this is an enrichment of the low end, not something the pipeline depends
+    on to run.
+    """
+    try:
+        raw = json.loads(CRED1_PATH.read_text())
+        return {domain: float(entry["s"]) for domain, entry in raw.items()}
+    except Exception as e:
+        logger.warning("CRED-1 dataset failed to load from %s: %s", CRED1_PATH, e)
+        return {}
+
+
 class CredibilityScorer:
     def __init__(self):
-        logger.info("Credibility scorer ready")
+        self._cred1 = _load_cred1()
+        logger.info("Credibility scorer ready (CRED-1: %d domains)", len(self._cred1))
+
+    def _cred1_score(self, host: str) -> float | None:
+        """
+        Exact host, then progressively shorter parent domains, so a subdomain
+        of a flagged domain (e.g. "mirror.infowars.com") inherits its score
+        instead of silently missing it. Stops one label short of a bare TLD.
+        """
+        parts = host.split(".")
+        for i in range(len(parts) - 1):
+            candidate = ".".join(parts[i:])
+            if candidate in self._cred1:
+                return self._cred1[candidate]
+        return None
 
     @staticmethod
     def _hostname(url: str) -> str:
@@ -120,6 +164,10 @@ class CredibilityScorer:
             return SCORES["neutral"]
         if self._matches(host, LOW_CREDIBILITY):
             return SCORES["low"]
+
+        cred1_score = self._cred1_score(host)
+        if cred1_score is not None:
+            return cred1_score
 
         for suffix, score in _TLD_SCORES:
             if host.endswith(suffix):

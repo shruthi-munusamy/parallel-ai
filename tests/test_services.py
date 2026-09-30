@@ -74,6 +74,47 @@ class TestCredibilityScorer:
         assert passages[1]["credibility_score"] == SCORES["low"]
 
 
+class TestCred1Integration:
+    """
+    CRED-1 (CC BY 4.0, github.com/aloth/cred-1) extends the low-credibility
+    end that the hand-curated LOW_CREDIBILITY tier never covered: actual
+    fake/conspiracy/unreliable domains, not just social/UGC platforms.
+    """
+
+    async def test_known_misinformation_domain_scores_below_unknown_default(self, credibility_scorer):
+        """
+        The regression this whole integration exists to fix: before CRED-1,
+        a known fake-news domain fell through every tier to the 0.40
+        "unknown" default -- scoring *above* Reddit's hand-curated 0.25.
+        """
+        score = await credibility_scorer.score({"source_url": "https://www.infowars.com/article"})
+        assert score < SCORES["unknown"]
+        assert score < SCORES["low"]
+
+    async def test_cred1_subdomain_inherits_parent_score(self, credibility_scorer):
+        flat = await credibility_scorer.score({"source_url": "https://infowars.com/a"})
+        sub = await credibility_scorer.score({"source_url": "https://forums.infowars.com/a"})
+        assert flat == sub
+
+    async def test_hand_curated_tier_still_wins_over_cred1(self, credibility_scorer, monkeypatch):
+        """
+        If a domain somehow appeared in both, the hand-curated tiers (checked
+        first in score()) must take precedence -- they are specifically
+        vetted for this project, CRED-1 is a broader supplementary signal.
+        """
+        monkeypatch.setitem(credibility_scorer._cred1, "nature.com", 0.05)
+        score = await credibility_scorer.score({"source_url": "https://nature.com/article"})
+        assert score == SCORES["high"]
+
+    async def test_domain_not_in_cred1_or_tiers_falls_back_to_tld_or_unknown(self, credibility_scorer):
+        score = await credibility_scorer.score({"source_url": "https://some-random-blog-xyz123.net/post"})
+        assert score == SCORES["unknown"]
+
+    def test_dataset_loaded_with_real_domain_count(self, credibility_scorer):
+        """Loose sanity bound, not an exact count -- the upstream dataset is versioned and updates."""
+        assert len(credibility_scorer._cred1) > 1000
+
+
 class TestCacheService:
     async def test_roundtrip(self):
         cache = CacheService()

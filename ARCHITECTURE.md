@@ -340,12 +340,20 @@ Blog    cred 0.35  SUPPORTS conf 0.85  →  0.298
 
 Averaging confidence picks `SUPPORTED` (0.85 > 0.60). Weighting picks `REFUTED`.
 
-Credibility itself is a static domain tier list — rule-based rather than learned,
-because no labeled credibility dataset exists at the needed scale, domain
-authority is stable, and the ML capacity in this system belongs in the stance
-detector. Matching is by domain suffix so `pmc.ncbi.nlm.nih.gov` inherits its
-parent's tier instead of dropping to the unknown default. Preprint servers
-(arXiv, bioRxiv) sit in tier 3 deliberately: academic, but not peer reviewed.
+Credibility itself is a hand-curated tier list for the positive end — rule-based
+rather than learned, because domain authority at that end is stable and the ML
+capacity in this system belongs in the stance detector — extended at the
+negative end (2026-09-30) by CRED-1 (`data/cred1_compact.json`, CC BY 4.0), an
+open dataset of ~2,700 known misinformation/fake/conspiracy domains built from
+OpenSources.co and the Iffy.news Index. NewsGuard itself is a paid partnership
+and was never a real option for an open-source project; CRED-1 was chosen
+specifically because it covers the gap the hand-curated list left, not because
+it's a general credibility source — its own documentation reports only 8
+reliable-source labels, so the positive tiers below stay hand-curated. Matching
+is by domain suffix so `pmc.ncbi.nlm.nih.gov` inherits its parent's tier (and a
+CRED-1 domain like `infowars.com` extends to `forums.infowars.com`) instead of
+dropping to the unknown default. Preprint servers (arXiv, bioRxiv) sit in tier
+3 deliberately: academic, but not peer reviewed.
 
 ### 7.2 Two ratios, kept separate
 
@@ -547,9 +555,15 @@ even after scaling; see README's Calibration section). Must be re-run again
 any time `STANCE_CHECKPOINT` changes — `STANCE_TEMPERATURE` is specific to
 one model's confidence/accuracy relationship, not a property of the task.
 
-**Credibility.** Replace the static tier list with NewsGuard ratings or a
-classifier trained on Media Bias/Fact Check labels. The interface does not change:
-source dict in, scalar in [0,1] out.
+**Credibility.** ~~Replace the static tier list with NewsGuard ratings or a
+classifier trained on Media Bias/Fact Check labels.~~ Partially done
+2026-09-30: NewsGuard is paid-only, so the low-credibility end is now extended
+by CRED-1 (open, CC BY 4.0) instead — see §7.1. The high-credibility tiers
+remain hand-curated, since CRED-1 and its source datasets (OpenSources.co,
+Iffy.news) are themselves built to flag unreliable domains, not rate good
+ones. A real *positive*-end dataset (Media Bias/Fact Check labels, or
+similar) is still the open item. The interface did not change: source dict
+in, scalar in [0,1] out.
 
 **Retrieval.** ~~Add a cross-encoder reranker over the top-k MiniLM results.
 Bi-encoder similarity is a good first pass and a mediocre final ranking.~~
