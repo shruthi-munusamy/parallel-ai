@@ -115,6 +115,48 @@ class TestCred1Integration:
         assert len(credibility_scorer._cred1) > 1000
 
 
+class TestRspIntegration:
+    """
+    WP:RSP (CC BY-SA 4.0, en.wikipedia.org/wiki/Wikipedia:Reliable_sources/
+    Perennial_sources) extends *both* ends -- unlike CRED-1, which only
+    covers known-bad domains, RSP is a general community reliability
+    judgment and includes genuinely reliable sources CRED-1 structurally
+    cannot rate.
+    """
+
+    async def test_rsp_only_domain_scores_above_unknown_default(self, credibility_scorer):
+        """
+        buzzfeednews.com is in neither the hand-curated tiers nor CRED-1 --
+        without RSP it would fall to the 0.40 unknown default despite being
+        a generally-reliable source by community consensus.
+        """
+        score = await credibility_scorer.score({"source_url": "https://www.buzzfeednews.com/article"})
+        assert score > SCORES["unknown"]
+
+    async def test_rsp_only_domain_scores_below_unknown_default_when_deprecated(self, credibility_scorer):
+        """baike.baidu.com is RSP-deprecated and absent from CRED-1 and the hand tiers."""
+        score = await credibility_scorer.score({"source_url": "https://baike.baidu.com/item/x"})
+        assert score < SCORES["unknown"]
+
+    async def test_cred1_wins_over_rsp_when_both_present(self, credibility_scorer):
+        """
+        breitbart.com is rated by both datasets with different scores --
+        CRED-1 (checked first in score()) must take precedence as the more
+        targeted misinformation-specific signal.
+        """
+        score = await credibility_scorer.score({"source_url": "https://www.breitbart.com/a"})
+        assert score == credibility_scorer._cred1["breitbart.com"]
+
+    async def test_rsp_subdomain_inherits_parent_score(self, credibility_scorer):
+        flat = await credibility_scorer.score({"source_url": "https://buzzfeednews.com/a"})
+        sub = await credibility_scorer.score({"source_url": "https://m.buzzfeednews.com/a"})
+        assert flat == sub
+
+    def test_dataset_loaded_with_real_domain_count(self, credibility_scorer):
+        """Loose sanity bound -- the live page is edited continuously, so an exact count would be brittle."""
+        assert len(credibility_scorer._rsp) > 500
+
+
 class TestCacheService:
     async def test_roundtrip(self):
         cache = CacheService()

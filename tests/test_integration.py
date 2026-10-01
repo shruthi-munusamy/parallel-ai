@@ -9,6 +9,7 @@ compose correctly, and a mocked stance detector would prove nothing.
 import pytest
 from fastapi.testclient import TestClient
 
+from backend.config import config
 from backend.main import app
 
 pytestmark = pytest.mark.slow
@@ -20,9 +21,23 @@ def client():
     TestClient as a context manager so FastAPI's lifespan runs and the models
     actually load. Without the `with`, `pipeline` stays empty and every request
     returns 503.
+
+    Forces the offline/no-LLM-key config regardless of what .env on the
+    developer's machine actually has set -- this module's "no network" claim
+    above must hold even when a real TAVILY_API_KEY is configured for other
+    work (e.g. the live eval), or these tests silently start hitting the real
+    API and failing on assertions that assume the mock corpus (empty evidence
+    for an out-of-corpus claim, a tight latency budget that assumes no network
+    fetch).
     """
-    with TestClient(app) as c:
-        yield c
+    original = (config.TAVILY_API_KEY, config.ANTHROPIC_API_KEY)
+    config.TAVILY_API_KEY = ""
+    config.ANTHROPIC_API_KEY = ""
+    try:
+        with TestClient(app) as c:
+            yield c
+    finally:
+        config.TAVILY_API_KEY, config.ANTHROPIC_API_KEY = original
 
 
 class TestHealth:

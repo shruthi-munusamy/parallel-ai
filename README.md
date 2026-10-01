@@ -125,12 +125,15 @@ half-life, floored at 0.3 so an old source is dampened, never discarded — an
 old source can still be correct about a stable fact). Missing or unparseable
 dates score 1.0, not a penalty. See `ARCHITECTURE.md` §7.4.
 
-`credibility_i`'s high-credibility tiers are hand-curated, but the low end is
-backed by [CRED-1](https://github.com/aloth/cred-1) (`data/cred1_compact.json`,
-CC BY 4.0 — Alexander Loth, built from OpenSources.co and the Iffy.news Index),
-an open dataset of ~2,700 known misinformation/fake/conspiracy domains. See
-`ARCHITECTURE.md` §7.1 for why NewsGuard wasn't an option and why CRED-1 only
-covers the low end.
+`credibility_i` is a small hand-curated tier list for sources this project
+specifically vetted, backed by two open datasets for everything else:
+[CRED-1](https://github.com/aloth/cred-1) (`data/cred1_compact.json`, CC BY
+4.0 — ~2,700 known misinformation domains) for the low end, and
+[WP:RSP](https://en.wikipedia.org/wiki/Wikipedia:Reliable_sources/Perennial_sources)
+(`data/rsp_compact.json`, CC BY-SA 4.0 — ~750 community-rated sources,
+covering *both* ends) for the positive end CRED-1 can't reach. See
+`ARCHITECTURE.md` §7.1 for why NewsGuard and Media Bias/Fact Check weren't
+options, and how the two datasets are layered.
 
 ### Sentence-level stance scoring
 
@@ -412,12 +415,12 @@ demo_script.py            scored report over those claims
   still read as `NEUTRAL` when the claim and the source phrase a concept
   differently ("climate change" vs "the observed warming"). Fine-tuning on FEVER
   is the real fix.
-- **Credibility scoring's high-credibility tiers are still a static domain
-  list.** The low-credibility end is now backed by CRED-1, an open dataset
-  of known misinformation domains (see `ARCHITECTURE.md` §7.1), but a real
-  dataset for *reliable* sources (NewsGuard is paid-only) is still open. Either
-  way, the scorer does not know that a given journal retracted a paper, or
-  that a reputable outlet ran a bad story.
+- **Credibility scoring is dataset-backed now, but still domain-level, not
+  article-level.** CRED-1 and WP:RSP (see `ARCHITECTURE.md` §7.1) cover known
+  misinformation and community-rated reliability respectively, but neither
+  knows that a given journal retracted a specific paper, or that a reputable
+  outlet ran one bad story — the score is still a property of the domain, not
+  the individual passage.
 - **The cache is per-process.** Multi-worker deployment needs Redis; the async
   interface is already the right shape for that swap.
 - **No claim-worthiness check.** Opinions and predictions are processed as if
