@@ -554,10 +554,15 @@ Full details in `backend/training/train_stance.py`,
 ## 11. What would come next
 
 **Accuracy.** ~~Run the FEVER + VitaminC fine-tune.~~ Done 2026-09-23: 86.9%
-accuracy / 0.838 macro F1 on held-out FEVER+VitaminC — see §10. What's left is
-the harder half: end-to-end verdict accuracy against published fact-checker
-rulings (PolitiFact, Snopes), which measures the whole pipeline rather than
-the classifier in isolation.
+accuracy / 0.838 macro F1 on held-out FEVER+VitaminC — see §10. ~~End-to-end
+verdict accuracy against published fact-checker rulings, which measures the
+whole pipeline rather than the classifier in isolation.~~ Done 2026-10-01 —
+see §12. The number is real but not good: 29% accuracy on the claims where
+the pipeline committed to a verdict (55/96 claims; the rest came back
+`INSUFFICIENT`), with a specific, diagnosed failure mode, not just noise.
+Finishing the classifier was the easier half of this problem; evaluating the
+whole assembled system honestly was the harder half, and it surfaced a real
+bug the classifier-only benchmark could never have shown.
 
 **Calibration.** ~~MC dropout gives a *relative* uncertainty signal, not a
 calibrated probability.~~ Done 2026-09-19 for the zero-shot fallback
@@ -596,3 +601,77 @@ but never used. For claims about evolving situations, a 2015 source and a
 Still open: a single global half-life can't tell a stable fact from a
 fast-moving topic; that needs the claim's subject matter classified first,
 not attempted here.
+
+---
+
+## 12. End-to-end evaluation against LIAR
+
+`backend/eval/eval_liar.py` runs real claims through the live assembled
+pipeline (real Tavily search, not the mock corpus) and compares the final
+verdict to real PolitiFact rulings, via the LIAR dataset (Wang, 2017; 12.8K+
+labeled political statements, `data/liar/`). This is the piece no
+classifier-only benchmark can stand in for: FEVER+VitaminC measures the
+stance detector alone, against evidence the benchmark already hands it.
+Here, decomposition, live retrieval, reranking, credibility weighting, and
+the synthesizer's verdict rule are all live and all contribute to the final
+answer.
+
+**Label mapping.** LIAR's 6-way labels collapse to this pipeline's 3-way
+directional verdicts, symmetrically around PolitiFact's own "half true"
+midpoint: `pants-fire`/`false` → `REFUTED`, `barely-true`/`half-true` →
+`MIXED`, `mostly-true`/`true` → `SUPPORTED`. `UNCHECKABLE` and `INSUFFICIENT`
+are scored as abstentions, not failures — the pipeline declining to commit is
+a different outcome than committing and being wrong.
+
+**Result (2026-10-01, 96 claims, stratified across all 6 LIAR labels, seed=0,
+`claude-haiku` decomposition unfunded so running on the rule-based
+fallback):** 0 errors, 0 claims rejected by the claim-worthiness gate.
+**57% coverage** (55/96 claims got a directional verdict; 41 came back
+`INSUFFICIENT`). **29% accuracy on those 55** — below the 33% a 3-way random
+guess would get on average, and this is not noise: the confusion matrix shows
+a specific, strong directional bias rather than scattered error.
+
+```
+predicted:      SUPPORTED  REFUTED  MIXED  INSUFFICIENT
+actual REFUTED:      14        2       5        11        (n=32)
+actual MIXED:        16        1       2        13        (n=32)
+actual SUPPORTED:    12        1       2        17        (n=32)
+```
+
+Whenever the pipeline committed to a verdict at all, it said `SUPPORTED` 76%
+of the time (42/55) — including on 14 of 32 claims PolitiFact rated
+`pants-fire` or `false`. Recall on `REFUTED` is 2/32; on `MIXED`, 2/32.
+
+**Diagnosed mechanism, not just a number.** Spot-checking the `REFUTED`→
+`SUPPORTED` misses (e.g. the Menendez "3.8% home sales tax" chain-email
+claim, a fabricated Stalin quote, the CFL-bulbs-cause-migraines claim — all
+well-known false claims with extensive fact-check coverage) shows the same
+pattern each time: the web's coverage of a widely-circulated false claim
+*restates the claim's content* prominently, even in articles whose overall
+verdict is "this is false" — a debunking article about the Stalin quote
+still contains a sentence reporting what the quote *says*. §4's sentence-level
+stance scoring (added specifically to stop NLI collapsing to NEUTRAL on long
+passages) reads that single restating sentence in isolation and scores it as
+entailment, with no way to see that the surrounding article's actual
+conclusion is the opposite. The fix that solved one failure mode
+(context dilution) opened a different one (context loss) — a real tradeoff,
+not a bug in the sense of an implementation mistake.
+
+This was not visible at any point before this eval: FEVER+VitaminC's
+evidence sentences are already the relevant supporting/refuting sentence, by
+construction — the benchmark cannot contain this failure mode, because it
+never hands the model a sentence that merely *restates* a claim inside a
+larger debunking argument. Only running the whole pipeline against
+real, messy web coverage of real false claims surfaced it.
+
+**Not fixed here**, for the same reason it wasn't attempted for recency in
+§7.4 — time-boxed, and the honest fix needs real design, not a quick patch.
+Candidates for a real fix: score stance over a sliding window of 2-3
+sentences instead of one (restores some context without fully reintroducing
+the dilution problem that motivated sentence-level scoring), or have the
+synthesizer discount a single outlier high-confidence sentence against a
+source whose other extracted sentences disagree with it, rather than
+summing all sentence-level weights as independent evidence. Both are
+untested hypotheses, not verified fixes.
+
+Full per-claim results: `data/liar/eval_results_test_n100_seed0.json`.

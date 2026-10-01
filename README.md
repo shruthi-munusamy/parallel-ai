@@ -217,6 +217,27 @@ by `EarlyStoppingCallback` around epoch 1.2 of 3 once macro F1 stopped
 improving. Full run details in `backend/training/train_stance.py` and
 `ARCHITECTURE.md` §10.
 
+**End-to-end verdict accuracy against real PolitiFact rulings** (the whole
+assembled pipeline, not the classifier alone), measured 2026-10-01 against
+96 stratified LIAR claims (`backend/eval/eval_liar.py`) —
+
+| Metric | Value |
+|---|---|
+| Coverage (claims given a directional verdict) | 57% (55/96) |
+| Accuracy on those 55 | **29%** |
+| Recall, REFUTED | 2/32 |
+| Recall, MIXED | 2/32 |
+| Recall, SUPPORTED | 12/32 |
+
+This number is real and not flattering, and it is more informative than the
+classifier-only 86.9% for exactly that reason: the pipeline shows a strong,
+diagnosed `SUPPORTED` bias (76% of its directional calls) rather than random
+error — debunking articles about a false claim still contain a sentence
+*restating* the claim, which the sentence-level stance scorer (added to fix a
+different failure mode — see §"Sentence-level stance scoring" below) reads in
+isolation as support. Full writeup, confusion matrix, and candidate fixes in
+`ARCHITECTURE.md` §12.
+
 CPU (M-series), offline corpus, `MC_SAMPLES=5`, fine-tuned checkpoint, cross-encoder reranking on:
 
 | Metric | Value |
@@ -415,6 +436,13 @@ demo_script.py            scored report over those claims
   still read as `NEUTRAL` when the claim and the source phrase a concept
   differently ("climate change" vs "the observed warming"). Fine-tuning on FEVER
   is the real fix.
+- **Sentence-level scoring has its own failure mode, measured, not
+  hypothetical.** The same per-sentence scoring above can latch onto a single
+  sentence that *restates* a false claim's content inside an article whose
+  actual verdict is "this is false," and score it as support. The end-to-end
+  eval against LIAR (see Measured Performance above, `ARCHITECTURE.md` §12)
+  found this causes a real `SUPPORTED` bias on refuted claims specifically,
+  not just general noise.
 - **Credibility scoring is dataset-backed now, but still domain-level, not
   article-level.** CRED-1 and WP:RSP (see `ARCHITECTURE.md` §7.1) cover known
   misinformation and community-rated reliability respectively, but neither
