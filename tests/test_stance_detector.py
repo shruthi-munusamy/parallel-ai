@@ -306,7 +306,7 @@ class TestSentenceLevelScoring:
             {"stance": "REFUTES", "stance_confidence": 0.71, "uncertainty": 0.05},
             {"stance": "NEUTRAL", "stance_confidence": 0.98, "uncertainty": 0.02},
         ]
-        result = stance_detector._aggregate_sentences(sentences, predictions)
+        result = stance_detector._aggregate_sentences("some claim", sentences, predictions)
         assert result["stance"] == "REFUTES"
         assert result["stance_sentence"] == "The deciding sentence."
 
@@ -316,7 +316,7 @@ class TestSentenceLevelScoring:
             {"stance": "SUPPORTS", "stance_confidence": 0.62, "uncertainty": 0.1},
             {"stance": "REFUTES", "stance_confidence": 0.93, "uncertainty": 0.1},
         ]
-        assert stance_detector._aggregate_sentences(sentences, predictions)["stance"] == "REFUTES"
+        assert stance_detector._aggregate_sentences("some claim", sentences, predictions)["stance"] == "REFUTES"
 
     def test_aggregation_falls_back_to_neutral(self, stance_detector):
         sentences = ["a", "b"]
@@ -324,14 +324,40 @@ class TestSentenceLevelScoring:
             {"stance": "NEUTRAL", "stance_confidence": 0.80, "uncertainty": 0.1},
             {"stance": "NEUTRAL", "stance_confidence": 0.95, "uncertainty": 0.1},
         ]
-        result = stance_detector._aggregate_sentences(sentences, predictions)
+        result = stance_detector._aggregate_sentences("some claim", sentences, predictions)
         assert result["stance"] == "NEUTRAL"
         assert result["stance_confidence"] == 0.95
 
     def test_aggregation_handles_empty(self, stance_detector):
-        result = stance_detector._aggregate_sentences([], [])
+        result = stance_detector._aggregate_sentences("some claim", [], [])
         assert result["stance"] == "NEUTRAL"
         assert result["uncertainty"] == 1.0
+
+    def test_aggregation_excludes_claim_echo_sentence(self, stance_detector):
+        """
+        A sentence that merely quotes the claim back (attributed to a third
+        party) must not win the vote on lexical overlap alone -- this is the
+        exact mechanism behind the SUPPORTED bias the LIAR eval found.
+        """
+        claim = "Sen. Bob Menendez voted to enact a new tax on the sale of homes of 3.8%."
+        sentences = [
+            'Bloggers say Bob Menendez voted to enact a new tax on the sale of homes of 3.8%.',
+            "A separate independent analysis found no record of any such vote.",
+        ]
+        predictions = [
+            {"stance": "SUPPORTS", "stance_confidence": 0.95, "uncertainty": 0.02},
+            {"stance": "REFUTES", "stance_confidence": 0.55, "uncertainty": 0.1},
+        ]
+        result = stance_detector._aggregate_sentences(claim, sentences, predictions)
+        assert result["stance"] == "REFUTES"
+
+    def test_aggregation_keeps_echo_when_nothing_else_available(self, stance_detector):
+        """If every directional sentence is an echo, fall back to the old behavior."""
+        claim = "Sen. Bob Menendez voted to enact a new tax on the sale of homes of 3.8%."
+        sentences = ['Bloggers say Bob Menendez voted to enact a new tax on the sale of homes of 3.8%.']
+        predictions = [{"stance": "SUPPORTS", "stance_confidence": 0.95, "uncertainty": 0.02}]
+        result = stance_detector._aggregate_sentences(claim, sentences, predictions)
+        assert result["stance"] == "SUPPORTS"
 
 
 class TestDegradation:

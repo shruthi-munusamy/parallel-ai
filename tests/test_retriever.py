@@ -9,6 +9,7 @@ import asyncio
 
 import pytest
 
+from backend.config import config
 from backend.models.retriever import EvidenceRetriever, _excerpt
 
 
@@ -87,6 +88,38 @@ class TestSemanticRanking:
 
     def test_empty_passages(self, retriever):
         assert retriever._rank_passages("claim", [], top_k=3) == []
+
+    def test_verdict_language_passage_promoted_into_pool(self, retriever, monkeypatch):
+        """
+        A fact-check's own ruling uses vocabulary with little similarity to
+        the claim it rules on, so pure similarity ranking can crowd it out
+        entirely -- the exact mechanism behind the LIAR eval's SUPPORTED
+        bias (ARCHITECTURE.md §12). A verdict-bearing passage that clears the
+        relevance floor must make the final pool even if several near-
+        duplicate restatements of the claim would otherwise outrank it.
+        """
+        monkeypatch.setattr(config, "VERDICT_MIN_RELEVANCE", 0.0)
+        claim = "Bob Menendez voted to enact a new tax on the sale of homes of 3.8%."
+        passages = [
+            "Bob Menendez voted to enact a new tax on the sale of homes of 3.8 percent.",
+            "Menendez voted for a new 3.8% tax on home sales according to the blog post.",
+            "The post claims Menendez voted to enact a 3.8% home sale tax this year.",
+            "We rate this claim about Menendez and the home sale tax False.",
+            "A totally unrelated passage about something else entirely different here.",
+        ]
+        ranked = retriever._rank_passages(claim, passages, top_k=3)
+        assert any("rate this claim" in r["text"] for r in ranked)
+
+    def test_verdict_promotion_respects_relevance_floor(self, retriever, monkeypatch):
+        """An irrelevant passage must not be promoted just for using verdict language."""
+        monkeypatch.setattr(config, "VERDICT_MIN_RELEVANCE", 0.9)
+        claim = "Bob Menendez voted to enact a new tax on the sale of homes of 3.8%."
+        passages = [
+            "Bob Menendez voted to enact a new tax on the sale of homes of 3.8 percent.",
+            "We rate this claim about the weather forecast tomorrow False.",
+        ]
+        ranked = retriever._rank_passages(claim, passages, top_k=1)
+        assert "weather forecast" not in ranked[0]["text"]
 
 
 class TestReranking:

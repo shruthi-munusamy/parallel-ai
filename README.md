@@ -221,22 +221,19 @@ improving. Full run details in `backend/training/train_stance.py` and
 assembled pipeline, not the classifier alone), measured 2026-10-01 against
 96 stratified LIAR claims (`backend/eval/eval_liar.py`) —
 
-| Metric | Value |
-|---|---|
-| Coverage (claims given a directional verdict) | 57% (55/96) |
-| Accuracy on those 55 | **29%** |
-| Recall, REFUTED | 2/32 |
-| Recall, MIXED | 2/32 |
-| Recall, SUPPORTED | 12/32 |
+| Metric | First pass | After the fix |
+|---|---|---|
+| Coverage (claims given a directional verdict) | 57% (55/96) | 44% (matched 36-claim subset) |
+| Accuracy on directional | 29% | **63%** |
 
-This number is real and not flattering, and it is more informative than the
-classifier-only 86.9% for exactly that reason: the pipeline shows a strong,
-diagnosed `SUPPORTED` bias (76% of its directional calls) rather than random
-error — debunking articles about a false claim still contain a sentence
-*restating* the claim, which the sentence-level stance scorer (added to fix a
-different failure mode — see §"Sentence-level stance scoring" below) reads in
-isolation as support. Full writeup, confusion matrix, and candidate fixes in
-`ARCHITECTURE.md` §12.
+The first-pass number was real and not flattering — more informative than
+the classifier-only 86.9% for exactly that reason: it showed a strong,
+diagnosed `SUPPORTED` bias (76% of directional calls, including 14/32
+pants-fire/false claims) rather than random error, something a classifier-
+only benchmark can't surface. Root cause and the fix that more than doubled
+accuracy on a matched subset (at the honest cost of some coverage — the
+system got more conservative, which is the right trade for a fact-checker)
+are in `ARCHITECTURE.md` §12 and §12.1.
 
 CPU (M-series), offline corpus, `MC_SAMPLES=5`, fine-tuned checkpoint, cross-encoder reranking on:
 
@@ -436,13 +433,13 @@ demo_script.py            scored report over those claims
   still read as `NEUTRAL` when the claim and the source phrase a concept
   differently ("climate change" vs "the observed warming"). Fine-tuning on FEVER
   is the real fix.
-- **Sentence-level scoring has its own failure mode, measured, not
-  hypothetical.** The same per-sentence scoring above can latch onto a single
-  sentence that *restates* a false claim's content inside an article whose
-  actual verdict is "this is false," and score it as support. The end-to-end
-  eval against LIAR (see Measured Performance above, `ARCHITECTURE.md` §12)
-  found this causes a real `SUPPORTED` bias on refuted claims specifically,
-  not just general noise.
+- **Sentence-level scoring had a real, measured failure mode — found and
+  largely fixed.** The end-to-end eval against LIAR (see Measured Performance
+  above) found both retrieval and aggregation favoring a sentence that merely
+  *restates* a false claim over the source's actual verdict. Fixed in both
+  places (`ARCHITECTURE.md` §12.1): accuracy on a matched subset went
+  27% → 63%. Not a complete fix — REFUTED/MIXED recall is still well below
+  SUPPORTED's, and n=36 is still a modest validation sample.
 - **Credibility scoring is dataset-backed now, but still domain-level, not
   article-level.** CRED-1 and WP:RSP (see `ARCHITECTURE.md` §7.1) cover known
   misinformation and community-rated reliability respectively, but neither

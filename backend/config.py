@@ -87,6 +87,14 @@ class Config:
     # generally rated higher-quality anyway, just marginally slower.
     RERANKER_MODEL: str = os.getenv("RERANKER_MODEL", "cross-encoder/ms-marco-MiniLM-L-12-v2")
     RERANK_POOL_MULTIPLIER: int = int(os.getenv("RERANK_POOL_MULTIPLIER", 3))
+    # Both ranking stages above score passages purely by similarity to the
+    # claim, which systematically under-ranks a fact-check's own verdict
+    # sentence ("we rate this claim False") against a passage that merely
+    # restates the claim -- maximally similar to it by construction. See
+    # retriever.py's _has_verdict_language docstring; found via the
+    # end-to-end LIAR eval, ARCHITECTURE.md §12.
+    VERDICT_SLOTS: int = int(os.getenv("VERDICT_SLOTS", 2))
+    VERDICT_MIN_RELEVANCE: float = float(os.getenv("VERDICT_MIN_RELEVANCE", 0.2))
 
     # ── Cache ─────────────────────────────────────────────────────────────────
     CACHE_TTL_S: float = float(os.getenv("CACHE_TTL_S", 3600))

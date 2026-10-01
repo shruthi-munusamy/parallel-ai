@@ -557,12 +557,17 @@ Full details in `backend/training/train_stance.py`,
 accuracy / 0.838 macro F1 on held-out FEVER+VitaminC — see §10. ~~End-to-end
 verdict accuracy against published fact-checker rulings, which measures the
 whole pipeline rather than the classifier in isolation.~~ Done 2026-10-01 —
-see §12. The number is real but not good: 29% accuracy on the claims where
-the pipeline committed to a verdict (55/96 claims; the rest came back
-`INSUFFICIENT`), with a specific, diagnosed failure mode, not just noise.
-Finishing the classifier was the easier half of this problem; evaluating the
-whole assembled system honestly was the harder half, and it surfaced a real
-bug the classifier-only benchmark could never have shown.
+see §12. First pass: 29% accuracy on claims the pipeline committed to (55/96;
+rest `INSUFFICIENT`), with a specific, diagnosed SUPPORTED bias, not just
+noise. ~~Fix the diagnosed bias (retrieval ranks by claim-similarity only, so
+a fact-check's own ruling loses to a passage that merely restates the
+claim).~~ Done same day — see §12.1: accuracy on a matched 36-claim subset
+rose 27% → 63%, trading some coverage (61% → 44%) for it. Finishing the
+classifier was the easy half; evaluating and then fixing the whole assembled
+system was the hard half, and neither step would have been possible without
+the other — the classifier-only benchmark could never have shown this bug,
+and the bug couldn't be fixed without a reproducible end-to-end eval to
+validate the fix against.
 
 **Calibration.** ~~MC dropout gives a *relative* uncertainty signal, not a
 calibrated probability.~~ Done 2026-09-19 for the zero-shot fallback
@@ -664,14 +669,58 @@ never hands the model a sentence that merely *restates* a claim inside a
 larger debunking argument. Only running the whole pipeline against
 real, messy web coverage of real false claims surfaced it.
 
-**Not fixed here**, for the same reason it wasn't attempted for recency in
-§7.4 — time-boxed, and the honest fix needs real design, not a quick patch.
-Candidates for a real fix: score stance over a sliding window of 2-3
-sentences instead of one (restores some context without fully reintroducing
-the dilution problem that motivated sentence-level scoring), or have the
-synthesizer discount a single outlier high-confidence sentence against a
-source whose other extracted sentences disagree with it, rather than
-summing all sentence-level weights as independent evidence. Both are
-untested hypotheses, not verified fixes.
-
 Full per-claim results: `data/liar/eval_results_test_n100_seed0.json`.
+
+### 12.1 The fix, and validating it honestly
+
+Root cause traced to two places, not one — fixed both:
+
+1. **Retrieval ranks by claim-similarity only** (`retriever.py`, both the
+   bi-encoder and cross-encoder stages). A fact-check's own ruling ("we rate
+   this claim False") shares almost no vocabulary with the claim it rules on,
+   so pure-similarity ranking systematically scores it *below* a passage that
+   merely restates the claim — maximally similar to it by construction.
+   Confirmed by direct inspection: for the Menendez example, all 9 retrieved
+   passages across 5 real fact-check pages were restatements; the source
+   pages' actual verdict sentences were never retrieved at all. Fix:
+   `_has_verdict_language()` reserves up to `VERDICT_SLOTS` (default 2) pool
+   slots for passages carrying fact-check-ruling vocabulary ("we rate",
+   "debunked", "pants on fire", "contrary to", …) that clear a minimum
+   relevance floor (`VERDICT_MIN_RELEVANCE`) but would otherwise lose on pure
+   similarity — it never overrides similarity ranking outright, only
+   guarantees such a passage a chance to compete.
+2. **Sentence-level aggregation has no concept of attribution**
+   (`stance_detector.py`). Even once a verdict sentence is retrieved, the
+   existing max-confidence-wins rule still lets a claim-echoing sentence beat
+   it if the echo happens to score higher. Fix: `_is_claim_echo()` excludes a
+   directional sentence from the vote when it both (a) contains an
+   attribution verb or quotation mark and (b) has ≥50% lexical overlap with
+   the claim — i.e. it's quoting/attributing the claim to a third party, not
+   asserting or evaluating it independently. This is a named, studied NLI
+   failure mode (annotation artifacts / lexical-overlap shortcuts; McCoy,
+   Pavlick & Linzen 2019, "Right for the Wrong Reasons"), not something
+   specific to this codebase.
+
+**Validated, not assumed.** Re-ran the eval on the exact same 36 claims from
+the original run (`eval_liar.py --n 40 --seed 0` reproduces an identical
+prefix of the original stratified sample — verified by matching claim IDs)
+rather than trusting the single Menendez anecdote:
+
+| | Before | After |
+|---|---|---|
+| Coverage | 61% | 44% |
+| Accuracy on directional | 27% | **63%** |
+| Share of directional calls that were SUPPORTED | 59% | 56% |
+
+Accuracy on directional more than doubled. Coverage *dropped* — the system
+got more conservative, which is the expected and acceptable side effect:
+removing the spurious high-confidence echo/restatement "evidence" that used
+to push borderline claims over the verdict threshold means more of them
+correctly fall back to `INSUFFICIENT` instead of being confidently wrong.
+Trading coverage for correctness is the right trade for a fact-checker.
+n=36 is still modest — this is a real, credible improvement, not a claim that
+the bias is fully solved.
+
+Full per-claim results, both runs: `data/liar/eval_results_test_n100_seed0.json`
+(before) and `data/liar/eval_results_test_n40_seed0_postfix.json` (after,
+same 36-claim prefix).

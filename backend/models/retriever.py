@@ -29,6 +29,7 @@ Snippet-only retrieval is the degraded path, not the intended one.
 
 import asyncio
 import logging
+import re
 
 import aiohttp
 import torch
@@ -38,6 +39,31 @@ from sentence_transformers import CrossEncoder, SentenceTransformer, util
 from backend.config import config
 
 logger = logging.getLogger(__name__)
+
+# A fact-check's own ruling ("we rate this claim False", "contrary to some
+# reports") shares almost no vocabulary with the claim it rules on, so claim-
+# similarity ranking -- the only signal _rank_passages has -- systematically
+# scores it *below* a passage that merely restates the claim, which is
+# maximally similar to the claim by construction. Confirmed empirically via
+# the end-to-end LIAR eval (ARCHITECTURE.md §12): for one claim, all 9
+# retrieved passages across 5 real PolitiFact/NJ.com fact-check pages
+# contained only restatements of the claim -- not one verdict sentence from
+# those same pages was ever retrieved. This is a narrow keyword signal for
+# "this passage likely states a conclusion," used only to reserve a couple of
+# slots in the ranked pool (see VERDICT_SLOTS) -- it never overrides
+# similarity ranking outright, and a passage still has to clear a minimum
+# relevance floor (VERDICT_MIN_RELEVANCE) to qualify.
+_VERDICT_MARKERS = re.compile(
+    r"\b(we rate|rated|rating|pants[- ]on[- ]fire|half[- ]true|mostly[- ]true|"
+    r"mostly[- ]false|debunks?|debunked|debunking|misleading|inaccurate|"
+    r"unsubstantiated|no evidence|our ruling|fact[- ]check(?:ed|ers?)?|"
+    r"hoax|fabricated|contrary to)\b",
+    re.IGNORECASE,
+)
+
+
+def _has_verdict_language(text: str) -> bool:
+    return bool(_VERDICT_MARKERS.search(text))
 
 # Sent on fetches: a default aiohttp agent string is rejected outright by a
 # meaningful share of publishers, which silently degraded us to snippet-only.
@@ -241,16 +267,35 @@ class EvidenceRetriever:
             passage_embeddings = self.embedder.encode(
                 passages, convert_to_tensor=True, show_progress_bar=False, batch_size=32
             )
-            similarities = util.cos_sim(claim_embedding, passage_embeddings)[0]
+            similarities = util.cos_sim(claim_embedding, passage_embeddings)[0].tolist()
             k = min(top_k, len(passages))
-            top = torch.topk(similarities, k=k)
+            order = sorted(range(len(passages)), key=lambda i: similarities[i], reverse=True)
+            selected = order[:k]
+
+            # Reserve up to VERDICT_SLOTS for passages carrying verdict
+            # language that didn't make the pure-similarity cut but still
+            # clear a minimum relevance floor -- see _has_verdict_language.
+            selected_set = set(selected)
+            verdict_extra = [
+                i for i in order
+                if i not in selected_set
+                and similarities[i] >= config.VERDICT_MIN_RELEVANCE
+                and _has_verdict_language(passages[i])
+            ][: config.VERDICT_SLOTS]
+            for i in verdict_extra:
+                weakest = min(selected, key=lambda j: similarities[j])
+                selected[selected.index(weakest)] = i
+            # Keep the pool sorted by relevance -- a verdict-language swap-in
+            # is still ranked by its own score, not appended out of order.
+            selected.sort(key=lambda i: similarities[i], reverse=True)
+
             return [
                 {
-                    "text": passages[int(idx)],
-                    "excerpt": _excerpt(passages[int(idx)]),
-                    "relevance": float(score),
+                    "text": passages[i],
+                    "excerpt": _excerpt(passages[i]),
+                    "relevance": float(similarities[i]),
                 }
-                for score, idx in zip(top.values, top.indices)
+                for i in selected
             ]
         except Exception as e:
             # Ranking failure should cost relevance, not the whole source.

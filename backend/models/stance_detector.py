@@ -65,6 +65,42 @@ _SENTENCE_BOUNDARY = re.compile(r"(?<=[.!?])\s+")
 # never enough context for an entailment decision.
 _MIN_SENTENCE_WORDS = 5
 
+# A sentence can "entail" the claim by merely quoting or attributing it to a
+# third party ("a blog claims X", "bloggers say X") rather than asserting or
+# evaluating it independently. NLI models are well documented to latch onto
+# lexical overlap as a shortcut for entailment regardless of such attribution
+# framing (annotation artifacts; McCoy, Pavlick & Linzen 2019, "Right for the
+# Wrong Reasons"), which is exactly what lets a fact-check article's own
+# restatement of the claim it is about to refute score as support. Confirmed
+# empirically via the end-to-end LIAR eval (ARCHITECTURE.md §12). Narrow on
+# purpose: both an attribution verb/quote AND high lexical overlap must be
+# present, so a genuine independent sentence that happens to share the
+# claim's vocabulary (same names, same numbers) is not suppressed.
+_CLAIM_ATTRIBUTION = re.compile(
+    r"\b(says?|said|saying|claims?|claimed|alleges?|alleged|stated|states)\b"
+    r"|[“”\"]",
+    re.IGNORECASE,
+)
+_ECHO_STOPWORDS = {
+    "the", "a", "an", "and", "or", "but", "of", "to", "in", "on", "for",
+    "is", "are", "was", "were", "be", "been", "that", "this", "it", "as",
+    "at", "by", "with", "from", "has", "have", "had", "will", "would",
+    "its", "their", "his", "her", "he", "she", "they", "we", "you", "i",
+    "sen", "rep", "mr", "mrs", "ms", "dr",
+}
+_ECHO_OVERLAP_THRESHOLD = 0.5
+
+
+def _is_claim_echo(sentence: str, claim: str) -> bool:
+    if not _CLAIM_ATTRIBUTION.search(sentence):
+        return False
+    claim_words = set(re.findall(r"[a-z0-9]+", claim.lower())) - _ECHO_STOPWORDS
+    if not claim_words:
+        return False
+    sentence_words = set(re.findall(r"[a-z0-9]+", sentence.lower()))
+    overlap = len(claim_words & sentence_words) / len(claim_words)
+    return overlap >= _ECHO_OVERLAP_THRESHOLD
+
 
 def _split_sentences(text: str, limit: int) -> list[str]:
     """Split a passage into scoreable sentences, longest-first up to `limit`."""
@@ -276,12 +312,12 @@ class StanceDetector:
         for passage, group in zip(passages, sentences_per_passage):
             group_predictions = flat_predictions[cursor : cursor + len(group)]
             cursor += len(group)
-            passage.update(self._aggregate_sentences(group, group_predictions))
+            passage.update(self._aggregate_sentences(claim, group, group_predictions))
 
         return passages
 
     @staticmethod
-    def _aggregate_sentences(sentences: list[str], predictions: list[dict]) -> dict:
+    def _aggregate_sentences(claim: str, sentences: list[str], predictions: list[dict]) -> dict:
         """
         Fold sentence-level predictions into one passage-level stance.
 
@@ -294,23 +330,31 @@ class StanceDetector:
         it refutes the claim, even when the surrounding sentences are background.
         Averaging would let three neutral sentences of context bury the one
         sentence that actually carries the evidence.
+
+        Echo sentences (see _is_claim_echo) are excluded from the vote before
+        taking the max: a sentence that merely quotes the claim back is not
+        independent evidence either way, and letting it win on lexical overlap
+        alone is what caused the SUPPORTED bias the LIAR eval found. If every
+        directional sentence in the passage turns out to be an echo, the
+        original behavior is kept (falls through to the neutral-read branch)
+        rather than discard real signal when there is nothing else to use.
         """
         if not predictions:
             return {"stance": NEUTRAL, "stance_confidence": 0.0, "uncertainty": 1.0, "raw_scores": {}}
 
-        directional = [
-            (prediction, sentence)
-            for prediction, sentence in zip(predictions, sentences)
-            if prediction["stance"] in (SUPPORTS, REFUTES)
-        ]
+        pairs = list(zip(predictions, sentences))
+        non_echo = [(p, s) for p, s in pairs if not _is_claim_echo(s, claim)]
+        pool = non_echo or pairs
+
+        directional = [(p, s) for p, s in pool if p["stance"] in (SUPPORTS, REFUTES)]
 
         if directional:
             best, sentence = max(directional, key=lambda pair: pair[0]["stance_confidence"])
         else:
-            # No side taken. Report the most confident neutral read, and keep its
-            # sentence so the UI still points at what was actually scored.
-            index = max(range(len(predictions)), key=lambda i: predictions[i]["stance_confidence"])
-            best, sentence = predictions[index], sentences[index]
+            # No side taken (among the non-echo pool). Report the most
+            # confident neutral read, and keep its sentence so the UI still
+            # points at what was actually scored.
+            best, sentence = max(pool, key=lambda pair: pair[0]["stance_confidence"])
 
         # The deciding sentence is surfaced so a reader can see exactly which
         # text produced the stance, instead of a paragraph they must re-scan.
