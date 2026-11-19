@@ -1,5 +1,5 @@
 """
-main.py - FastAPI server for neural claim verification.
+FastAPI server for claim verification.
 
 Pipeline, in order:
   0. ClaimWorthinessChecker -> rejects non-factual input before any work runs
@@ -12,8 +12,7 @@ Pipeline, in order:
 
 Every stage degrades rather than failing: missing API keys fall back to a mock
 corpus and rule-based decomposition, failed fetches fall back to search
-snippets, and a model failure yields NEUTRAL at full uncertainty. The only
-uncaught path is a genuine bug, which surfaces as a 500.
+snippets, and a model failure yields NEUTRAL at full uncertainty.
 """
 
 import asyncio
@@ -45,23 +44,12 @@ logger = logging.getLogger(__name__)
 
 VERSION = "2.1.0"
 
-# Loaded once at startup and shared across requests. The transformer weights are
-# ~750MB combined; loading them per request would dominate every other cost in
-# the system by two orders of magnitude.
+# Loaded once at startup (~750MB of weights) and shared across requests.
 pipeline: dict[str, Any] = {}
 
 
 def build_pipeline() -> dict[str, Any]:
-    """
-    Construct every pipeline stage.
-
-    The single call site for "what's in the pipeline" -- demo_script.py used
-    to duplicate this dict, which meant a new stage (claim_worthiness) landed
-    in main.py's lifespan but not there, and demo_script.py crashed with a
-    bare KeyError until someone noticed. Constructors are synchronous and
-    CPU-bound; callers should run this via asyncio.to_thread so the event
-    loop stays responsive while weights load.
-    """
+    """Construct every stage. Blocking; run via asyncio.to_thread."""
     return {
         "worthiness": ClaimWorthinessChecker(),
         "decomposer": QueryDecomposer(),
@@ -150,8 +138,7 @@ class Evidence(BaseModel):
     uncertainty: float = Field(ge=0.0, le=1.0)
     credibility_score: float = Field(ge=0.0, le=1.0)
     publication_date: str | None = None
-    # The specific sentence the stance was computed from, so a reader can see
-    # what drove the label instead of re-scanning the whole excerpt.
+    # The sentence the stance was computed from.
     stance_sentence: str | None = None
 
 
@@ -168,8 +155,7 @@ class VerificationResponse(BaseModel):
     support_ratio: float
     refute_ratio: float
     neutral_ratio: float
-    # True when results came from the offline corpus rather than live search, so
-    # a demo run is never mistaken for a real one.
+    # True when results came from the offline corpus rather than live search.
     mock_search: bool = False
     cached: bool = False
 
@@ -179,9 +165,7 @@ class VerificationResponse(BaseModel):
 
 async def run_pipeline(claim: str, max_sources: int) -> dict:
     """Stages 0-6. Returns the response payload minus timing metadata."""
-    # 0. Claim worthiness -- rejects non-factual input before any search runs,
-    # rather than letting it fall through to a confident-looking verdict on
-    # evidence that was never going to support or refute an opinion anyway.
+    # 0. Claim worthiness
     worthiness = pipeline["worthiness"].check(claim)
     if not worthiness["checkable"]:
         logger.info("Stage 0 worthiness: rejected (%s)", worthiness["category"])
@@ -234,9 +218,7 @@ async def run_pipeline(claim: str, max_sources: int) -> dict:
     )
     logger.info("Stage 3 retrieve: %d passages in %.2fs", len(passages), time.perf_counter() - stage_start)
 
-    # 4 & 5. Stance detection and credibility scoring.
-    # Independent of one another: stance reads passage text, credibility reads
-    # the URL, so they overlap instead of running back to back.
+    # 4 & 5. Stance and credibility are independent, so they run concurrently.
     stage_start = time.perf_counter()
     passages, _ = await asyncio.gather(
         pipeline["stance"].predict_batch(claim, passages),
@@ -262,8 +244,7 @@ async def run_pipeline(claim: str, max_sources: int) -> dict:
         for p in passages
         if p.get("stance") != "UNRELATED"
     ]
-    # Strongest evidence first: weight is exactly the quantity the synthesizer
-    # aggregated, so the ordering matches what actually drove the verdict.
+    # Strongest first, by the same weight the synthesizer aggregates.
     evidence.sort(
         key=lambda e: e.stance_confidence * e.credibility_score * recency_weight(e.publication_date),
         reverse=True,
@@ -317,8 +298,6 @@ async def verify_claim(request: ClaimRequest):
     cached = await pipeline["cache"].get(request.claim)
     if cached:
         logger.info("Cache hit")
-        # Timing and the cached flag are refreshed so the client sees the cost
-        # of *this* call, not the original computation.
         return VerificationResponse(
             **{**cached, "cached": True,
                "processing_time_ms": int((time.perf_counter() - start) * 1000)}

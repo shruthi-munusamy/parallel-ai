@@ -1,30 +1,15 @@
 """
-stance_detector.py - DeBERTa-v3 stance detection with uncertainty quantification.
+DeBERTa-v3 NLI stance detection with MC dropout uncertainty.
 
-This is the intelligence layer of the system; everything around it is plumbing.
-The task is Natural Language Inference: given a premise (an evidence passage)
-and a hypothesis (the claim), decide entailment / contradiction / neutral, which
-maps onto SUPPORTS / REFUTES / NEUTRAL.
+Premise = evidence, hypothesis = claim; entailment / contradiction / neutral
+map to SUPPORTS / REFUTES / NEUTRAL. Uses the fine-tuned checkpoint from
+train_stance.py when present, else a zero-shot MNLI model.
 
-Two modes:
-  - Fine-tuned: loads from a local checkpoint produced by train_stance.py.
-  - Zero-shot fallback: cross-encoder/nli-deberta-v3-base, already trained on
-    MNLI, used when no checkpoint exists.
+Labels are read from the checkpoint's id2label rather than hardcoded: the two
+checkpoints order them differently, and a fixed map would silently swap
+SUPPORTS and NEUTRAL.
 
-Label mapping is read from the model's own config.id2label rather than
-hardcoded. The two checkpoints order their labels differently -- the fallback is
-(contradiction, entailment, neutral) while train_stance.py emits
-(REFUTES, NOT ENOUGH INFO, SUPPORTS) -- so a hardcoded map silently inverts
-SUPPORTS and NEUTRAL the moment a fine-tuned checkpoint is dropped in. That
-failure is invisible: the API keeps returning confident, wrong verdicts.
-
-Uncertainty via Monte Carlo dropout:
-  Softmax confidence is poorly calibrated -- a model can be confidently wrong.
-  Running T forward passes with dropout left enabled approximates sampling from
-  the posterior over model weights; the spread across those samples is an
-  epistemic uncertainty estimate. High spread means the model does not know,
-  which is different from the model predicting NEUTRAL, and the two are worth
-  distinguishing to a user reading a fact-check.
+Uncertainty is the spread across T forward passes with dropout enabled.
 """
 
 import asyncio
@@ -65,17 +50,11 @@ _SENTENCE_BOUNDARY = re.compile(r"(?<=[.!?])\s+")
 # never enough context for an entailment decision.
 _MIN_SENTENCE_WORDS = 5
 
-# A sentence can "entail" the claim by merely quoting or attributing it to a
-# third party ("a blog claims X", "bloggers say X") rather than asserting or
-# evaluating it independently. NLI models are well documented to latch onto
-# lexical overlap as a shortcut for entailment regardless of such attribution
-# framing (annotation artifacts; McCoy, Pavlick & Linzen 2019, "Right for the
-# Wrong Reasons"), which is exactly what lets a fact-check article's own
-# restatement of the claim it is about to refute score as support. Confirmed
-# empirically via the end-to-end LIAR eval (ARCHITECTURE.md §12). Narrow on
-# purpose: both an attribution verb/quote AND high lexical overlap must be
-# present, so a genuine independent sentence that happens to share the
-# claim's vocabulary (same names, same numbers) is not suppressed.
+# A sentence that attributes the claim to someone ("a blog claims X") scores as
+# entailment on lexical overlap alone (McCoy et al. 2019), so a fact-check's
+# restatement of the claim it refutes reads as support. An echo needs both an
+# attribution marker and high overlap, so independent sentences that merely
+# share vocabulary are kept. See ARCHITECTURE.md §12.
 _CLAIM_ATTRIBUTION = re.compile(
     r"\b(says?|said|saying|claims?|claimed|alleges?|alleged|stated|states)\b"
     r"|[“”\"]",
@@ -137,8 +116,6 @@ class StanceDetector:
 
         self.label_map = self._build_label_map()
         self.mc_samples = max(1, config.MC_SAMPLES)
-        # See config.STANCE_TEMPERATURE: 1.0 until calibrate_temperature.py has
-        # been run against this specific checkpoint.
         self.temperature = config.STANCE_TEMPERATURE
 
         logger.info(
@@ -169,13 +146,7 @@ class StanceDetector:
     # ── Inference ────────────────────────────────────────────────────────────
 
     def _set_dropout_training(self, enabled: bool) -> None:
-        """
-        Toggle dropout while leaving the rest of the model in eval mode.
-
-        model.train() would be the shorter way, but it also switches any
-        normalization layer that tracks running statistics into training mode.
-        Toggling only nn.Dropout keeps MC sampling from mutating model state.
-        """
+        """Toggle only nn.Dropout; model.train() would also flip normalization layers."""
         for module in self.model.modules():
             if isinstance(module, nn.Dropout):
                 module.train(enabled)
@@ -186,11 +157,6 @@ class StanceDetector:
         Run MC dropout over a batch of (premise, hypothesis) pairs.
 
         Returns (mean_probs [B, C], uncertainty [B]).
-
-        The T passes run over the whole batch rather than per pair: one padded
-        forward pass over B pairs costs far less than B separate passes, and the
-        stance stage runs T x (passages) times, so this constant factor
-        dominates end-to-end latency.
         """
         if not pairs:
             return np.zeros((0, 3)), np.zeros((0,))
@@ -208,11 +174,7 @@ class StanceDetector:
         if self.mc_samples > 1:
             self._set_dropout_training(True)
         try:
-            # fork_rng isolates and restores global RNG state, so seeding the
-            # dropout masks here is reproducible without perturbing any other
-            # torch consumer in the process. The estimate stays a valid MC
-            # average -- it is over a fixed sample of masks rather than a fresh
-            # one, which is the tradeoff that buys deterministic verdicts.
+            # fork_rng seeds the dropout masks without touching global RNG state.
             with torch.random.fork_rng(devices=[]):
                 torch.manual_seed(config.MC_SEED)
                 for _ in range(self.mc_samples):
@@ -220,14 +182,11 @@ class StanceDetector:
                     scaled = logits / self.temperature
                     samples.append(torch.softmax(scaled, dim=-1).cpu().numpy())
         finally:
-            # Restored even if a pass raises, so one failure cannot leave the
-            # shared model stochastic for every later request.
             self._set_dropout_training(False)
 
         stacked = np.stack(samples)                      # [T, B, C]
         mean_probs = stacked.mean(axis=0)                # [B, C]
-        # Mean per-class standard deviation across passes. With T=1 this is 0,
-        # which is honest: a single deterministic pass measures no spread.
+        # Mean per-class std across passes; 0 when T=1.
         uncertainty = stacked.std(axis=0).mean(axis=-1)  # [B]
         return mean_probs, uncertainty
 
@@ -236,9 +195,6 @@ class StanceDetector:
         confidence = float(probs[index])
         stance = self.label_map[index]
 
-        # A low-confidence prediction means the passage does not speak to the
-        # claim. Marking it UNRELATED excludes it from the verdict entirely,
-        # rather than letting weak noise accumulate into a confident result.
         if confidence < config.UNRELATED_THRESHOLD:
             stance = UNRELATED
 
@@ -273,12 +229,9 @@ class StanceDetector:
             return results
 
         try:
-            # Torch inference is CPU-bound and releases the GIL, so off-loading
-            # it keeps the event loop responsive to other requests.
             return await asyncio.to_thread(run)
         except Exception as e:
-            # Graceful degradation: a model failure yields NEUTRAL at maximum
-            # uncertainty, which the synthesizer treats as no signal.
+            # A model failure yields NEUTRAL at maximum uncertainty.
             logger.error("Stance prediction failed: %s", e, exc_info=True)
             return [
                 {"stance": NEUTRAL, "stance_confidence": 0.0, "uncertainty": 1.0, "raw_scores": {}}
@@ -298,9 +251,7 @@ class StanceDetector:
                 passage.update(prediction)
             return passages
 
-        # Sentence-level path. Flatten every sentence from every passage into one
-        # batch so the whole stage is a single set of padded forward passes,
-        # then fold the results back per passage.
+        # Score every sentence of every passage in one batch, then regroup.
         sentences_per_passage = [
             _split_sentences(text, config.MAX_SENTENCES_PER_PASSAGE) or [text]
             for text in texts
@@ -319,25 +270,11 @@ class StanceDetector:
     @staticmethod
     def _aggregate_sentences(claim: str, sentences: list[str], predictions: list[dict]) -> dict:
         """
-        Fold sentence-level predictions into one passage-level stance.
+        Fold sentence predictions into one passage stance.
 
-        Rule: the most confident directional sentence wins; a passage is NEUTRAL
-        only when no sentence takes a side.
-
-        Why max rather than mean: NLI entailment over a multi-sentence premise
-        requires the *whole* premise to entail the hypothesis, which is the wrong
-        semantics for fact-checking. A source refutes a claim if any sentence in
-        it refutes the claim, even when the surrounding sentences are background.
-        Averaging would let three neutral sentences of context bury the one
-        sentence that actually carries the evidence.
-
-        Echo sentences (see _is_claim_echo) are excluded from the vote before
-        taking the max: a sentence that merely quotes the claim back is not
-        independent evidence either way, and letting it win on lexical overlap
-        alone is what caused the SUPPORTED bias the LIAR eval found. If every
-        directional sentence in the passage turns out to be an echo, the
-        original behavior is kept (falls through to the neutral-read branch)
-        rather than discard real signal when there is nothing else to use.
+        The most confident directional sentence wins (max, not mean, so
+        background sentences cannot bury the one that carries the evidence).
+        Claim echoes are excluded first, unless every sentence is an echo.
         """
         if not predictions:
             return {"stance": NEUTRAL, "stance_confidence": 0.0, "uncertainty": 1.0, "raw_scores": {}}
@@ -351,11 +288,6 @@ class StanceDetector:
         if directional:
             best, sentence = max(directional, key=lambda pair: pair[0]["stance_confidence"])
         else:
-            # No side taken (among the non-echo pool). Report the most
-            # confident neutral read, and keep its sentence so the UI still
-            # points at what was actually scored.
             best, sentence = max(pool, key=lambda pair: pair[0]["stance_confidence"])
 
-        # The deciding sentence is surfaced so a reader can see exactly which
-        # text produced the stance, instead of a paragraph they must re-scan.
         return {**best, "stance_sentence": sentence}

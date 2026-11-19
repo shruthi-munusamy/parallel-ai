@@ -1,43 +1,14 @@
 """
-eval_liar.py - End-to-end verdict accuracy against real fact-checker rulings.
+End-to-end verdict accuracy against PolitiFact rulings from the LIAR dataset
+(Wang, 2017), using live search. Download the data first; see data/liar/README.
 
-Why this exists:
-  backend/training/train_stance.py measures the stance classifier in
-  isolation against FEVER+VitaminC (86.9% accuracy, 0.838 macro F1). That
-  number says nothing about the whole pipeline -- decomposition, live search,
-  retrieval, credibility weighting, and the synthesizer's verdict rule all sit
-  between a claim and a verdict, and none of them are exercised by a
-  classifier-only benchmark. This script runs real claims through the full
-  live pipeline (real Tavily search, not the mock corpus) and compares the
-  final verdict against real PolitiFact rulings.
-
-Dataset: LIAR (Wang, 2017, ACL) -- see data/liar/README for the original
-citation. "You are allowed to use this dataset for research purposes only"
-per that README; this script and its output are for exactly that, not
-redistribution or commercial use. Downloaded directly from the authoritative
-source (cs.ucsb.edu) rather than a community HF mirror, since HF's generic
-`datasets` loader no longer supports LIAR's loading script and a bare TSV
-fetch from the original authors avoids trusting an arbitrary re-upload's
-transcription.
-
-Label mapping (6-way LIAR -> this pipeline's verdict space):
+LIAR labels map to verdicts symmetrically around "half-true":
   pants-fire, false      -> REFUTED
   barely-true, half-true -> MIXED
   mostly-true, true      -> SUPPORTED
-This is a design decision, not something LIAR or PolitiFact prescribes: it is
-the symmetric collapse around PolitiFact's own "half true" midpoint, chosen
-because this pipeline already has a MIXED verdict and collapsing to a 3-way
-split without one (as most LIAR follow-up work does, lumping half-true in with
-the true side) would throw away a verdict category this pipeline was built to
-use. UNCHECKABLE and INSUFFICIENT are not failures against this mapping --
-they are the pipeline declining to take a side, tracked separately as an
-abstention rate rather than forced into right/wrong.
+UNCHECKABLE and INSUFFICIENT count as abstentions, not errors.
 
-Tavily cost: decomposition produces up to 6 sub-queries, each one Tavily
-search call, so each claim costs up to 6 credits against the account's
-monthly search quota (check with `curl -H "Authorization: Bearer $TAVILY_API_KEY"
-https://api.tavily.com/usage` before a large run). This script reports
-estimated credits spent so a run can be sized to what's left for the month.
+Each claim costs up to 6 Tavily searches.
 """
 
 import argparse
@@ -66,10 +37,7 @@ LABEL_TO_BUCKET = {
     "true": "SUPPORTED",
 }
 
-# Pipeline verdicts that count as the pipeline taking a side, evaluable
-# against LABEL_TO_BUCKET. MIXED is deliberately included even though it's
-# also a bucket value -- it's a real prediction, just one with no clean
-# right/wrong direction, so it's scored like any other predicted class.
+# Verdicts scored against LABEL_TO_BUCKET. MIXED is scored like any other class.
 DIRECTIONAL_VERDICTS = {"SUPPORTED", "REFUTED", "MIXED"}
 
 
@@ -88,11 +56,7 @@ def load_liar_split(split: str) -> list[dict]:
 
 
 def stratified_sample(claims: list[dict], n: int, seed: int) -> list[dict]:
-    """
-    Sample roughly n/6 claims per LIAR label rather than n claims uniformly at
-    random, so a small sample still spans the full confusion matrix instead of
-    happening to miss pants-fire or true entirely.
-    """
+    """Sample about n/6 claims per label so small runs cover every label."""
     rng = random.Random(seed)
     by_label: dict[str, list[dict]] = {}
     for c in claims:
@@ -182,10 +146,7 @@ def main():
 
     logging.basicConfig(level=logging.INFO, format="%(message)s")
 
-    # Imported here, not at module level: constructing the app triggers
-    # config/model loading, which should only happen once argparse has
-    # validated the CLI (and after logging is configured, so startup logs
-    # aren't silently dropped).
+    # Deferred so argparse and logging are set up before the app loads models.
     from backend.main import app
 
     claims = load_liar_split(args.split)

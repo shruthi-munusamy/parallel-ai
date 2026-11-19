@@ -8,15 +8,11 @@ a readable report.
     python demo_script.py --claim "..."        # a single ad-hoc claim
     python demo_script.py --sources 12         # widen the evidence set
 
-Runs in-process: it calls the pipeline directly rather than going through HTTP,
-so no server needs to be running. Without API keys it uses the offline corpus
-and says so, because a demo that silently shows fabricated evidence as though
-it were live is worse than no demo.
+Runs the pipeline in-process, so no server is needed. Without API keys it uses
+the offline corpus and says so.
 
-Accuracy is reported against the expected verdicts in data/test_cases.json.
-Those labels are the author's reading of the evidence, not a gold-standard
-benchmark, and the sample is small -- the number is a sanity check, not a
-publishable metric.
+Accuracy is against the hand-labeled verdicts in data/test_cases.json: a small
+sanity check, not a benchmark.
 """
 
 import argparse

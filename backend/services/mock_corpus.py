@@ -1,16 +1,9 @@
 """
-mock_corpus.py - Offline stand-in for live web search.
+Offline stand-in for web search.
 
-Kept deliberately realistic rather than lorem-ipsum: snippets carry genuine
-stance-bearing language (entailment and contradiction), and domains span the
-credibility tiers, so the stance detector and the credibility-weighted
-synthesizer are exercised for real when no API key is present. A corpus of
-bland placeholder text would make every passage NEUTRAL and hide bugs in the
-two stages that matter most.
-
-Retrieval is deliberate keyword overlap, not embeddings. The semantic layer
-belongs to EvidenceRetriever; duplicating it here would mask retrieval bugs by
-making the mock look smarter than the real path.
+Snippets carry real supporting and refuting language across credibility tiers,
+so stance and synthesis are exercised without an API key. Matching is plain
+keyword overlap; semantic ranking stays in EvidenceRetriever.
 """
 
 import re

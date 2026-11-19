@@ -1,20 +1,12 @@
 """
-calibrate_temperature.py - Fit a softmax temperature for the active stance checkpoint.
-
-MC dropout (stance_detector.py) gives a *relative* uncertainty signal: it tells
-you a prediction is shakier than another, but "confidence": 0.9 does not mean
-"correct 90% of the time" -- neural nets are systematically overconfident.
-Temperature scaling (Guo et al. 2017) fixes this cheaply: divide logits by a
-single learned scalar T before softmax. It does not change which class wins
-(T > 0 preserves argmax), only how honest the confidence number is. Unlike
-train_stance.py, this needs no GPU -- it is a handful of forward passes over a
-held-out set plus a 1-parameter optimization, so it runs on this laptop.
+Fit a softmax temperature (Guo et al. 2017) for the active stance checkpoint,
+so reported confidence tracks accuracy. Does not change predictions. Runs on
+CPU.
 
 Usage:
     python -m backend.training.calibrate_temperature [--n-samples 1000]
 
-Recalibrate whenever STANCE_CHECKPOINT changes -- T is specific to one model's
-confidence/accuracy relationship, not a property of the task.
+Refit whenever STANCE_CHECKPOINT changes.
 """
 
 import argparse

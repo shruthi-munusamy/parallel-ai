@@ -1,48 +1,21 @@
 """
-synthesizer.py - Credibility-weighted evidence aggregation.
+Credibility-weighted evidence aggregation.
 
-The contribution:
-  Most NLI-based fact-checking pipelines treat source credibility as a post-hoc
-  filter ("discard anything below threshold X"). That throws away signal and is
-  brittle at the boundary. Here credibility is a multiplier on evidence weight
-  during aggregation, so a highly credible source disagreeing with a claim
-  outweighs a weak source agreeing with it, without either being discarded.
+Credibility is a multiplier on evidence weight rather than a filter, so a
+credible source disagreeing with a claim outweighs a weak one agreeing with it.
+Per passage i:
 
-Formally, per passage i:
     w_i = stance_confidence_i * credibility_i * recency_i
 
-    support_mass = sum(w_i : stance_i == SUPPORTS)
-    refute_mass  = sum(w_i : stance_i == REFUTES)
-    neutral_mass = sum(w_i : stance_i == NEUTRAL)
+    support_mass = sum(w_i : stance_i == SUPPORTS)   (likewise refute, neutral)
 
-recency_i is an exponential half-life decay on the source's publication date
-(see recency_weight): a 2015 source and a 2025 source should not carry equal
-weight for a claim about an evolving situation. It is a dampener, not a
-filter -- floored at TEMPORAL_MIN_WEIGHT rather than decaying toward zero,
-because an old source can still be the correct answer for a claim about a
-historically stable fact ("Paris is the capital of France"), and a missing or
-unparseable date scores 1.0 (no penalty) rather than being treated as
-maximally stale. A single global half-life cannot distinguish "stable fact"
-from "evolving situation" -- that would need claim-specific temporal
-sensitivity, which is future work (see ARCHITECTURE.md).
+For example, PubMed (cred 0.95) REFUTES at 0.60 gives w = 0.570, and a blog
+(cred 0.35) SUPPORTS at 0.85 gives w = 0.298: averaging confidence would pick
+SUPPORTS, weighting picks REFUTES.
 
-Worked example of why this differs from averaging confidence:
-    PubMed  (cred 0.95) says REFUTES   at confidence 0.60 -> w = 0.570
-    Blog    (cred 0.35) says SUPPORTS  at confidence 0.85 -> w = 0.298
-  Plain averaging picks SUPPORTS (0.85 > 0.60); weighting picks REFUTES.
-
-Two different ratios, deliberately kept separate:
-  - The reported *_ratio fields are shares of total evidence mass including
-    neutral, so they sum to 1 and describe what the corpus looks like.
-  - The verdict is decided by the support-vs-refute contest alone, since neutral
-    evidence is not a vote for either side.
-  An earlier version divided only by (support + refute) and then derived
-  neutral_ratio as the remainder, which made it identically zero and left the
-  UI's neutral segment permanently empty.
-
-Uncertainty is propagated, not discarded: MC dropout spread from the stance
-detector discounts the reported confidence, so "many sources agree but the model
-is unstable" does not read the same as genuine consensus.
+The reported *_ratio fields are shares of total mass including neutral (they
+sum to 1). The verdict is decided by support vs refute alone, since neutral
+evidence abstains. MC dropout uncertainty discounts the reported confidence.
 """
 
 import logging
@@ -62,24 +35,16 @@ CONTESTED_FLOOR = 0.35
 # and there is not enough directional evidence to call it either way.
 MIN_CONTESTED_SHARE = 0.20
 
-# Years for a source's temporal weight to decay to half. 5 is a deliberately
-# generic middle ground: short enough to matter for fast-moving topics, long
-# enough not to unfairly punish a source that is old but still correct.
+# Years for a source's temporal weight to halve.
 TEMPORAL_HALF_LIFE_YEARS = 5.0
-# Floor on the decay, not a filter: even a very old source keeps some weight,
-# since age alone does not make a stable fact wrong.
+# Floor on the decay: age alone does not make a stable fact wrong.
 TEMPORAL_MIN_WEIGHT = 0.3
 
 EPSILON = 1e-9
 
 
 def recency_weight(date_str: str | None, now: datetime | None = None) -> float:
-    """
-    Exponential half-life decay by source age. Missing or unparseable dates
-    score 1.0 (no penalty) -- silence about when something was published is
-    not evidence that it is stale, and punishing it would make the pipeline
-    worse at exactly the passages retrieval already struggles to date.
-    """
+    """Half-life decay by source age. Missing or unparseable dates score 1.0."""
     if not date_str:
         return 1.0
     try:

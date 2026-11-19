@@ -1,25 +1,20 @@
 """
-train_stance.py - Fine-tune DeBERTa-v3 on FEVER + VitaminC
+Fine-tune DeBERTa-v3 for stance on FEVER + VitaminC.
 
-Datasets:
-  - FEVER: 185k Wikipedia claim/evidence pairs (SUPPORTS/REFUTES/NOT ENOUGH INFO)
-  - VitaminC: counterfactual augmentation, teaches sensitivity to small factual changes
+FEVER supplies 185k Wikipedia claim/evidence pairs; VitaminC adds
+counterfactual pairs ("aspirin reduces fever" vs "aspirin does not reduce
+fever") that standard NLI models tend to miss.
 
-Why VitaminC matters:
-  "aspirin reduces fever" vs "aspirin does not reduce fever"
-  Standard NLI models often miss these small negations. VitaminC specifically
-  trains robustness to counterfactual edits — the key failure mode in fact-checking.
-
-Label mapping (consistent with DeBERTa NLI convention):
-  REFUTES / contradiction   → 0
-  NOT ENOUGH INFO / neutral → 1
-  SUPPORTS / entailment     → 2
+Labels: REFUTES=0, NOT ENOUGH INFO=1, SUPPORTS=2.
 """
 
+import logging
 import os
+
 import numpy as np
 import torch
 from datasets import load_dataset, concatenate_datasets, Dataset
+from sklearn.metrics import f1_score, classification_report
 from transformers import (
     AutoTokenizer,
     AutoModelForSequenceClassification,
@@ -27,8 +22,6 @@ from transformers import (
     Trainer,
     EarlyStoppingCallback
 )
-from sklearn.metrics import f1_score, classification_report
-import logging
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -46,12 +39,10 @@ WARMUP_RATIO = 0.06
 WEIGHT_DECAY = 0.01
 SEED         = 42
 
-# Caps dataset size for a smoke test on a machine with no GPU (validates the
-# script end to end in minutes instead of hours); unset for the real run.
+# Cap dataset size for a quick CPU smoke test; leave unset for a real run.
 MAX_TRAIN_SAMPLES = os.getenv("MAX_TRAIN_SAMPLES")
 MAX_VAL_SAMPLES = os.getenv("MAX_VAL_SAMPLES")
 
-# Label space
 LABEL2ID = {"REFUTES": 0, "NOT ENOUGH INFO": 1, "SUPPORTS": 2}
 ID2LABEL = {v: k for k, v in LABEL2ID.items()}
 
@@ -59,15 +50,10 @@ ID2LABEL = {v: k for k, v in LABEL2ID.items()}
 
 def load_fever():
     """
-    FEVER: Fact Extraction and VERification
-
-    The original "fever" repo on the Hub ships a loading script, which datasets
-    >=3.0 refuses to execute. pietrolesci/nli_fever is the same FEVER data
-    re-hosted as Parquet with gold evidence already joined in, which is also
-    why it needs no reassembly here. Its own field names are inverted from NLI
-    convention -- "premise" there is the claim and "hypothesis" is the
-    evidence -- so they are swapped below to match this file's convention
-    (premise = evidence, hypothesis = claim).
+    FEVER via pietrolesci/nli_fever (Parquet, gold evidence joined), since the
+    original "fever" loading script no longer runs on datasets >= 3.0. Its
+    premise/hypothesis fields are the reverse of NLI convention, so they are
+    swapped here.
     """
     logger.info("Loading FEVER dataset...")
     dataset = load_dataset("pietrolesci/nli_fever")
@@ -92,21 +78,15 @@ def load_fever():
 
     train = filter_and_map("train")
     val   = filter_and_map("dev")
-    logger.info(f"FEVER — train: {len(train)}, val: {len(val)}")
+    logger.info("FEVER: train %d, val %d", len(train), len(val))
     return train, val
 
 
 def load_vitaminc():
-    """
-    VitaminC: counterfactual fact verification dataset
-    Critically improves robustness to small factual edits — the exact failure
-    mode standard NLI models exhibit on real-world fact-checking.
-    Format is already (evidence, claim, label), directly usable.
-    """
+    """VitaminC, already in (evidence, claim, label) form."""
     logger.info("Loading VitaminC dataset...")
     dataset = load_dataset("tals/vitaminc")
 
-    # VitaminC label strings: "SUPPORTS", "REFUTES", "NOT ENOUGH INFO"
     def process_vitaminc(example):
         label_str = example["label"]
         if label_str not in LABEL2ID:
@@ -127,18 +107,13 @@ def load_vitaminc():
 
     train = filter_and_map("train")
     val   = filter_and_map("validation")
-    logger.info(f"VitaminC — train: {len(train)}, val: {len(val)}")
+    logger.info("VitaminC: train %d, val %d", len(train), len(val))
     return train, val
 
 
 # ── Tokenization ─────────────────────────────────────────────────────────────
 
 def build_tokenize_fn(tokenizer):
-    """
-    NLI input format: [CLS] premise [SEP] hypothesis [SEP]
-    We pass (premise, hypothesis) as sentence pair — tokenizer handles the
-    segment IDs and separator tokens automatically.
-    """
     def tokenize(examples):
         return tokenizer(
             examples["premise"],
@@ -155,10 +130,10 @@ def build_tokenize_fn(tokenizer):
 def compute_metrics(eval_pred):
     logits, labels = eval_pred
     predictions = np.argmax(logits, axis=-1)
-    
+
     macro_f1 = f1_score(labels, predictions, average="macro")
     per_class = f1_score(labels, predictions, average=None)
-    
+
     return {
         "macro_f1":       macro_f1,
         "f1_refutes":     per_class[0],
@@ -172,11 +147,7 @@ def compute_metrics(eval_pred):
 def main():
     torch.manual_seed(SEED)
 
-    # Logged up front, unconditionally: a driver/CUDA-build mismatch makes
-    # torch.cuda.is_available() silently return False, which would run the
-    # whole job on CPU and blow through the walltime limit with barely any
-    # progress. This is cheaper to check here than in a separate interactive
-    # debug session.
+    # A driver/CUDA-build mismatch silently falls back to CPU; make it visible.
     cuda_ok = torch.cuda.is_available()
     logger.info(
         "torch=%s cuda_build=%s cuda_available=%s",
@@ -190,11 +161,9 @@ def main():
             "very unlikely to finish within the job's time limit."
         )
 
-    # Load and combine datasets
     fever_train, fever_val   = load_fever()
     vitaminc_train, vitaminc_val = load_vitaminc()
 
-    # Combine: FEVER is the primary dataset, VitaminC adds counterfactual robustness
     train_dataset = concatenate_datasets([fever_train, vitaminc_train]).shuffle(seed=SEED)
     val_dataset   = concatenate_datasets([fever_val, vitaminc_val]).shuffle(seed=SEED)
 
@@ -203,13 +172,10 @@ def main():
     if MAX_VAL_SAMPLES:
         val_dataset = val_dataset.select(range(min(int(MAX_VAL_SAMPLES), len(val_dataset))))
 
-    logger.info(f"Combined train: {len(train_dataset)}, val: {len(val_dataset)}")
+    logger.info("Combined: train %d, val %d", len(train_dataset), len(val_dataset))
 
-    # Tokenizer + model
-    # dtype is explicit because from_pretrained's default ("auto") picks up
-    # this checkpoint's stored float16 weights, which produces NaN logits
-    # from the first forward pass on both CPU and MPS -- fp16 mixed precision
-    # is handled separately below via TrainingArguments(fp16=...).
+    # Explicit float32: the default "auto" dtype loads the stored fp16 weights,
+    # which give NaN logits on CPU and MPS. Mixed precision is set via fp16= below.
     tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME)
     model = AutoModelForSequenceClassification.from_pretrained(
         MODEL_NAME,
@@ -217,12 +183,8 @@ def main():
         id2label=ID2LABEL,
         label2id=LABEL2ID,
         dtype=torch.float32,
-        # microsoft/deberta-v3-base only ships pytorch_model.bin on its main
-        # revision; newer transformers refuses to torch.load that format
-        # below torch 2.6 (CVE-2025-32434) regardless of whether the load
-        # would actually be safe. Forcing safetensors makes it fetch the
-        # community PR that adds a safetensors copy instead of raising, and
-        # avoids torch.load's real security exposure entirely as a bonus.
+        # The main revision only has pytorch_model.bin, which transformers
+        # refuses to torch.load below torch 2.6 (CVE-2025-32434).
         use_safetensors=True,
     )
 
@@ -230,14 +192,10 @@ def main():
     train_dataset = train_dataset.map(tokenize_fn, batched=True, remove_columns=["premise", "hypothesis"])
     val_dataset   = val_dataset.map(tokenize_fn,   batched=True, remove_columns=["premise", "hypothesis"])
 
-    # warmup_ratio was removed (not just deprecated) in newer transformers
-    # versions than this was first written against -- compute the equivalent
-    # step count by hand instead of depending on either name existing.
+    # Newer transformers dropped warmup_ratio, so convert it to steps.
     steps_per_epoch = -(-len(train_dataset) // (BATCH_SIZE * GRAD_ACCUM))  # ceil div
     warmup_steps = int(WARMUP_RATIO * steps_per_epoch * EPOCHS)
 
-    # Training arguments
-    # fp16 enabled for GPU; automatically ignored if no CUDA
     training_args = TrainingArguments(
         output_dir=OUTPUT_DIR,
         num_train_epochs=EPOCHS,
@@ -274,12 +232,10 @@ def main():
     logger.info("Starting training...")
     trainer.train()
 
-    # Save final model
     trainer.save_model(OUTPUT_DIR)
     tokenizer.save_pretrained(OUTPUT_DIR)
-    logger.info(f"Model saved to {OUTPUT_DIR}")
+    logger.info("Model saved to %s", OUTPUT_DIR)
 
-    # Final evaluation with full classification report
     predictions = trainer.predict(val_dataset)
     preds = np.argmax(predictions.predictions, axis=-1)
     labels = predictions.label_ids

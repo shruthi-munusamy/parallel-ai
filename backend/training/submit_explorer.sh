@@ -25,22 +25,16 @@ set -euo pipefail
 # to create the claim-verify env this script activates below.
 
 module load anaconda3/2024.06
-# `module load` alone does not give a non-interactive shell conda's
-# activate/deactivate shell function -- conda.sh must be sourced explicitly,
-# or `conda activate` fails with "Run 'conda init' before 'conda activate'"
-# and (without set -e) execution falls through to the base Python instead.
+# Non-interactive shells need conda.sh sourced before `conda activate` works.
 source "$(conda info --base)/etc/profile.d/conda.sh"
 conda activate claim-verify
 
-# Verify GPU is visible. ${VAR:-unset} guards against `set -u` killing the
-# job over an echo if the scheduler doesn't export this variable.
 echo "CUDA devices: ${CUDA_VISIBLE_DEVICES:-unset}"
 nvidia-smi
 
 # ── Paths ────────────────────────────────────────────────────────────────────
 cd $SLURM_SUBMIT_DIR
 
-# Create output dirs
 mkdir -p logs
 mkdir -p checkpoints/stance_deberta
 

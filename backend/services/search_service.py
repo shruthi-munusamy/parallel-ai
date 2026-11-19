@@ -1,16 +1,9 @@
 """
-search_service.py - Web search with graceful degradation.
+Web search via Tavily.
 
-Provider: Tavily, which returns clean extracted snippets rather than raw SERP
-HTML, so there is no scraping or rate-limit layer to maintain.
-
-Degradation contract: a missing API key is a configuration state, not an error.
-Without TAVILY_API_KEY this serves a small built-in corpus so the pipeline,
-the demo and the test suite all run end to end offline. `is_mock` is surfaced
-through /health so a mock-backed result is never mistaken for a live one.
-
-Swapping providers is a one-class change: anything returning
-{url, title, snippet, date} satisfies the rest of the pipeline.
+Without TAVILY_API_KEY this serves the built-in mock corpus so everything runs
+offline; `is_mock` is reported through /health and each response. Results are
+{url, title, snippet, date}.
 """
 
 import asyncio
@@ -55,9 +48,7 @@ class SearchService:
             return search_mock_corpus(query, max_results)
 
         try:
-            # TavilyClient.search is blocking. Calling it directly inside an
-            # async def would stall the event loop and serialize every
-            # concurrent sub-query, so it runs on a worker thread.
+            # TavilyClient is blocking.
             response = await asyncio.to_thread(
                 self.client.search,
                 query=query,
@@ -80,14 +71,7 @@ class SearchService:
         ]
 
     async def search_many(self, queries: list[str], max_results: int = 5) -> list[dict]:
-        """
-        Run sub-queries concurrently and merge, preserving first-seen order and
-        deduplicating by URL.
-
-        Concurrency matters here: decomposition produces up to 6 sub-queries, so
-        sequential search would make the search stage ~6x the latency of one
-        call and blow the end-to-end budget on its own.
-        """
+        """Run queries concurrently and merge, deduplicating by URL in first-seen order."""
         if not queries:
             return []
 

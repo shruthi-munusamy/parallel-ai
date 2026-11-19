@@ -1,24 +1,9 @@
 """
-query_decomposer.py - LLM-based claim decomposition.
+Claim decomposition into search queries.
 
-Why this stage exists:
-  Searching the claim verbatim returns pages that echo the claim's framing, so
-  the evidence set is biased toward whichever side phrased it. Decomposition
-  generates semantically distinct sub-questions, including ones aimed at
-  refuting evidence, which is what makes the verdict contestable rather than a
-  confirmation of the query.
-
-  The original implementation appended fixed strings ("+ research", "+ studies")
-  -- that is string manipulation, and every variant retrieves near-identical
-  results because the search engine's own semantics dominate.
-
-Design decision worth defending:
-  An LLM does decomposition, a fine-tuned discriminative model does stance.
-  Decomposition is open-ended generation with no labeled training data and runs
-  once per claim, so it is neither latency-critical nor a good fit for a small
-  fine-tune. Stance detection is a calibrated 3-way classification run dozens of
-  times per claim, where a fine-tuned encoder is both more accurate and roughly
-  an order of magnitude cheaper per call.
+Searching the claim verbatim returns pages that echo its framing, so an LLM
+generates distinct sub-queries, including ones aimed at refuting evidence.
+Falls back to fixed templates without an API key.
 """
 
 import asyncio
@@ -74,8 +59,6 @@ class QueryDecomposer:
 
     async def _llm_decompose(self, claim: str) -> list[str]:
         try:
-            # The SDK client is synchronous; calling it directly would block the
-            # event loop for the whole round trip.
             message = await asyncio.to_thread(
                 self.client.messages.create,
                 model=config.DECOMPOSER_MODEL,
@@ -88,9 +71,7 @@ class QueryDecomposer:
                 logger.warning("Could not parse decomposition response: %r", raw[:200])
                 return []
 
-            # The claim itself anchors the search: sub-queries broaden coverage
-            # but the literal claim is still the single best query for finding
-            # sources that address it head-on.
+            # The literal claim stays first; it is still the best single query.
             ordered = [claim]
             seen = {claim.strip().lower()}
             for query in queries:
@@ -107,11 +88,7 @@ class QueryDecomposer:
             return []
 
     def _rule_based_fallback(self, claim: str) -> list[str]:
-        """
-        Structured fallback. Weaker than LLM decomposition because the variants
-        share most of their content words, but it deliberately includes opposing
-        framings so the evidence set is not purely confirmatory.
-        """
+        """Template queries, including opposing framings."""
         stripped = claim.rstrip("?.").strip()
         return [
             claim,
@@ -124,13 +101,7 @@ class QueryDecomposer:
 
 
 def _parse_json_array(text: str) -> list[str]:
-    """
-    Extract a JSON array of strings from a model response.
-
-    Models wrap JSON in prose or fences often enough that strict json.loads on
-    the raw text fails intermittently, which would drop us to the weaker
-    fallback for no real reason.
-    """
+    """Extract a JSON array of strings, tolerating code fences and surrounding prose."""
     candidates = [text]
 
     fenced = re.search(r"```(?:json)?\s*(.*?)```", text, re.DOTALL)

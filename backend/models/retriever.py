@@ -1,30 +1,13 @@
 """
-retriever.py - Passage extraction and semantic ranking.
+Passage extraction and ranking.
 
-Three stages per source:
-  1. Fetch the page and strip it to readable text.
-  2. Split into passages and rank them against the claim by embedding cosine
-     similarity (bi-encoder), keeping a wider candidate pool than needed.
-  3. Rerank that pool with a cross-encoder, keeping the final top-k.
-
-Why semantic ranking rather than keyword matching: a claim about "intermittent
-fasting" must match a passage discussing "time-restricted eating", which shares
-no content words. Cosine similarity over sentence embeddings captures that;
-BM25 or substring matching does not.
-
-Why rerank at all when the bi-encoder already ranks by similarity: a
-bi-encoder embeds the claim and each passage independently, so it can only
-compare their embeddings after the fact -- it never lets the claim and
-passage attend to each other. A cross-encoder scores them jointly through
-one transformer pass, which is more accurate but too slow to run over every
-passage from every source. Two stages get both: the bi-encoder's cheap recall
-over everything, then the cross-encoder's expensive precision over its
-pre-filtered pool.
-
-Why fetch the page at all when search already returns a snippet: snippets are
-one or two sentences chosen for relevance to the *query*, not for stance. The
-sentence that actually contradicts a claim is usually deeper in the article.
-Snippet-only retrieval is the degraded path, not the intended one.
+Per source:
+  1. Fetch the page and strip it to text (falls back to the search snippet,
+     which rarely contains the sentence that settles the claim).
+  2. Split into passages and rank them by bi-encoder cosine similarity,
+     keeping a wider candidate pool than needed.
+  3. Rerank that pool with a cross-encoder, which scores claim and passage
+     jointly but is too slow to run over every passage.
 """
 
 import asyncio
@@ -40,19 +23,11 @@ from backend.config import config
 
 logger = logging.getLogger(__name__)
 
-# A fact-check's own ruling ("we rate this claim False", "contrary to some
-# reports") shares almost no vocabulary with the claim it rules on, so claim-
-# similarity ranking -- the only signal _rank_passages has -- systematically
-# scores it *below* a passage that merely restates the claim, which is
-# maximally similar to the claim by construction. Confirmed empirically via
-# the end-to-end LIAR eval (ARCHITECTURE.md §12): for one claim, all 9
-# retrieved passages across 5 real PolitiFact/NJ.com fact-check pages
-# contained only restatements of the claim -- not one verdict sentence from
-# those same pages was ever retrieved. This is a narrow keyword signal for
-# "this passage likely states a conclusion," used only to reserve a couple of
-# slots in the ranked pool (see VERDICT_SLOTS) -- it never overrides
-# similarity ranking outright, and a passage still has to clear a minimum
-# relevance floor (VERDICT_MIN_RELEVANCE) to qualify.
+# A fact-check's ruling ("we rate this claim False") shares little vocabulary
+# with the claim, so similarity ranking scores it below passages that merely
+# restate the claim. Passages with these markers get up to VERDICT_SLOTS
+# reserved pool slots if they clear VERDICT_MIN_RELEVANCE. See
+# ARCHITECTURE.md §12.
 _VERDICT_MARKERS = re.compile(
     r"\b(we rate|rated|rating|pants[- ]on[- ]fire|half[- ]true|mostly[- ]true|"
     r"mostly[- ]false|debunks?|debunked|debunking|misleading|inaccurate|"
@@ -65,8 +40,8 @@ _VERDICT_MARKERS = re.compile(
 def _has_verdict_language(text: str) -> bool:
     return bool(_VERDICT_MARKERS.search(text))
 
-# Sent on fetches: a default aiohttp agent string is rejected outright by a
-# meaningful share of publishers, which silently degraded us to snippet-only.
+
+# Many publishers reject aiohttp's default User-Agent.
 _HEADERS = {
     "User-Agent": (
         "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
@@ -110,13 +85,7 @@ class EvidenceRetriever:
         top_k: int | None = None,
         fetch_pages: bool = True,
     ) -> list[dict]:
-        """
-        Returns a flat list of ranked passages, each carrying its source metadata.
-
-        Fetches run concurrently. Sequential fetching was the dominant term in
-        end-to-end latency: 10 sources x up to an 8s timeout is 80s worst case,
-        versus 8s when they overlap.
-        """
+        """Returns a flat list of ranked passages, each carrying its source metadata."""
         if not sources:
             return []
 
@@ -125,8 +94,7 @@ class EvidenceRetriever:
         if fetch_pages:
             pages = await self._fetch_all([s.get("url", "") for s in sources])
         else:
-            # Mock mode: URLs are synthetic, so skip the network entirely and
-            # rank over snippets instead of burning a timeout per source.
+            # Mock URLs are synthetic; rank snippets only.
             pages = ["" for _ in sources]
 
         passages: list[dict] = []
@@ -139,7 +107,6 @@ class EvidenceRetriever:
             snippet = source.get("snippet", "") or ""
 
             if not content:
-                # Degraded path: the search snippet is all we have.
                 if snippet:
                     passages.append({**meta, "text": snippet, "excerpt": _excerpt(snippet)})
                 continue
@@ -159,13 +126,7 @@ class EvidenceRetriever:
     # ── Fetching ─────────────────────────────────────────────────────────────
 
     async def _fetch_all(self, urls: list[str]) -> list[str]:
-        """
-        Fetch every URL concurrently, bounded by a semaphore.
-
-        The bound exists because unbounded fan-out across many sources opens as
-        many sockets at once and gets us rate-limited or throttled; a single
-        shared ClientSession also reuses connections and the DNS cache.
-        """
+        """Fetch every URL concurrently, at most FETCH_CONCURRENCY at a time."""
         semaphore = asyncio.Semaphore(config.FETCH_CONCURRENCY)
         timeout = aiohttp.ClientTimeout(total=config.FETCH_TIMEOUT_S)
 
@@ -202,8 +163,6 @@ class EvidenceRetriever:
                     return ""
                 content_type = response.headers.get("Content-Type", "")
                 if "html" not in content_type and "text" not in content_type:
-                    # PDFs and other binaries would otherwise be decoded into
-                    # mojibake and ranked as if they were prose.
                     return ""
                 html = await response.text(errors="ignore")
         except asyncio.TimeoutError:
@@ -230,12 +189,8 @@ class EvidenceRetriever:
 
     def _split_into_passages(self, text: str, max_words: int = 120) -> list[str]:
         """
-        Group sentences into passages of roughly max_words.
-
-        120 words rather than the model's 512-token ceiling: a passage should be
-        one coherent argument. Stuffing a passage to the token limit dilutes the
-        stance signal, because a single contradicting sentence gets averaged
-        against several paragraphs of unrelated context.
+        Group sentences into passages of roughly max_words, well under the
+        model's token limit so one sentence's stance isn't diluted.
         """
         sentences = [s.strip() for s in text.replace("! ", ". ").replace("? ", ". ").split(". ")]
         sentences = [s for s in sentences if s]
@@ -272,9 +227,7 @@ class EvidenceRetriever:
             order = sorted(range(len(passages)), key=lambda i: similarities[i], reverse=True)
             selected = order[:k]
 
-            # Reserve up to VERDICT_SLOTS for passages carrying verdict
-            # language that didn't make the pure-similarity cut but still
-            # clear a minimum relevance floor -- see _has_verdict_language.
+            # Swap in verdict-language passages that missed the cut.
             selected_set = set(selected)
             verdict_extra = [
                 i for i in order
@@ -285,8 +238,6 @@ class EvidenceRetriever:
             for i in verdict_extra:
                 weakest = min(selected, key=lambda j: similarities[j])
                 selected[selected.index(weakest)] = i
-            # Keep the pool sorted by relevance -- a verdict-language swap-in
-            # is still ranked by its own score, not appended out of order.
             selected.sort(key=lambda i: similarities[i], reverse=True)
 
             return [
@@ -303,16 +254,7 @@ class EvidenceRetriever:
             return [{"text": p, "excerpt": _excerpt(p)} for p in passages[:top_k]]
 
     def _rerank_passages(self, claim: str, candidates: list[dict], top_k: int) -> list[dict]:
-        """
-        Rerank a bi-encoder candidate pool with a cross-encoder.
-
-        A cross-encoder scores (claim, passage) jointly through one transformer
-        pass, rather than comparing independently-encoded embeddings -- more
-        accurate at judging whether a specific passage actually addresses the
-        claim, but too slow to run over every passage from every source. It
-        only ever sees `candidates`, the bi-encoder's own pre-filtered pool,
-        never the raw passage list.
-        """
+        """Rerank a bi-encoder candidate pool with the cross-encoder."""
         if not candidates:
             return []
         try:
@@ -324,8 +266,6 @@ class EvidenceRetriever:
                 for i in order[:top_k]
             ]
         except Exception as e:
-            # Same degradation contract as _rank_passages: a broken reranker
-            # costs precision, not the whole source.
             logger.error("Reranking failed: %s", e)
             return candidates[:top_k]
 

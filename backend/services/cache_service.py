@@ -1,17 +1,8 @@
 """
-cache_service.py - In-process TTL + LRU cache for verification results.
+In-process TTL + LRU cache for verification results.
 
-Why cache at all: a verification costs one LLM call, several search calls, up to
-ten page fetches and T x N transformer passes. Repeating that for an identical
-claim is pure waste, and demo traffic repeats claims constantly.
-
-Why bounded and expiring: the previous dict grew without limit and never
-invalidated, so a long-running server leaked memory and served stale verdicts
-about live events indefinitely. Entries now expire after CACHE_TTL_S and the
-least-recently-used entry is evicted at CACHE_MAX_ENTRIES.
-
-Scope: per-process. A multi-worker deployment wants Redis; the async interface
-here is deliberately the same shape so that swap is a single-class change.
+Entries expire after CACHE_TTL_S; the least recently used is evicted beyond
+CACHE_MAX_ENTRIES. Per-process only, so multiple workers don't share it.
 """
 
 import hashlib
@@ -29,8 +20,6 @@ class CacheService:
     def __init__(self, ttl_s: float | None = None, max_entries: int | None = None):
         self.ttl_s = config.CACHE_TTL_S if ttl_s is None else ttl_s
         self.max_entries = config.CACHE_MAX_ENTRIES if max_entries is None else max_entries
-        # OrderedDict gives O(1) LRU: move_to_end on read, popitem(last=False)
-        # to evict the coldest entry.
         self._store: OrderedDict[str, tuple[float, Any]] = OrderedDict()
         self._hits = 0
         self._misses = 0

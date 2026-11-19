@@ -1,26 +1,18 @@
 """
-logging_config.py - Structured logging with per-request correlation.
-
-Why a request id: the pipeline fans out across six stages and concurrent HTTP
-fetches, so interleaved log lines from two in-flight claims are otherwise
-impossible to separate. The id is stored in a ContextVar, which propagates into
-asyncio tasks automatically, and injected into every record by a filter.
+Logging setup that tags every record with the current request id, so lines from
+concurrent requests can be told apart. The id lives in a ContextVar, which
+propagates into asyncio tasks.
 """
 
 import logging
 import sys
 from contextvars import ContextVar
 
-# Empty string rather than None so the format string never renders "None".
 _request_id: ContextVar[str] = ContextVar("request_id", default="-")
 
 
 def set_request_id(value: str) -> None:
     _request_id.set(value)
-
-
-def get_request_id() -> str:
-    return _request_id.get()
 
 
 class RequestIdFilter(logging.Filter):
@@ -36,10 +28,7 @@ _DATEFMT = "%H:%M:%S"
 
 
 def configure_logging(level: str = "INFO") -> None:
-    """
-    Idempotent root-logger setup. Safe to call from main.py, demo_script.py and
-    tests; repeated calls replace handlers instead of stacking duplicates.
-    """
+    """Configure the root logger. Idempotent: repeat calls replace handlers."""
     root = logging.getLogger()
     for handler in list(root.handlers):
         root.removeHandler(handler)
