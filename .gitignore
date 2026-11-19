@@ -9,3 +9,11 @@ logs/
 frontend/dist/
 frontend/node_modules/
 .pytest_cache/
+
+# Local assistant config
+.claude/
+CLAUDE.md
+CLAUDE.local.md
+
+# LIAR is research-use-only; download it instead (see data/liar/README)
+data/liar/*.tsv
