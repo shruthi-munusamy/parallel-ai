@@ -450,3 +450,12 @@ demo_script.py            scored report over those claims
   interface is already the right shape for that swap.
 - **No claim-worthiness check.** Opinions and predictions are processed as if
   they were falsifiable factual claims.
+
+## Credits
+
+- Domain credibility data from [CRED-1](https://github.com/aloth/cred-1) by
+  Alexander Loth (CC BY 4.0), built from OpenSources.co (CC BY 4.0) by Melissa
+  Zimdars et al. and the Iffy.news Index (MIT).
+- Domain reliability data derived from Wikipedia's
+  [Reliable sources/Perennial sources](https://en.wikipedia.org/wiki/Wikipedia:Reliable_sources/Perennial_sources)
+  (WP:RSP), text available under CC BY-SA 4.0.
