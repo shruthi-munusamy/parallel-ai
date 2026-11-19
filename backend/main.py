@@ -77,7 +77,7 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(
-    title="Neural Claim Verification API",
+    title="Parallel AI",
     description=(
         "Fact-checking via DeBERTa NLI stance detection and "
         "credibility-weighted evidence synthesis."

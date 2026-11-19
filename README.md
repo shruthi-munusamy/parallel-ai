@@ -1,4 +1,4 @@
-# Neural Claim Verification
+# Parallel AI
 
 A fact-checking system that automates *lateral reading* — the method professional
 fact-checkers use: take a claim, search for what independent sources say about it,

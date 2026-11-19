@@ -166,7 +166,7 @@ async def run(claims: list[dict], max_sources: int) -> int:
     # Imported here so --help stays instant instead of loading torch first.
     from backend.main import build_pipeline, run_pipeline, pipeline
 
-    print(c("\n  Neural Claim Verification — demo", BOLD))
+    print(c("\n  Parallel AI — demo", BOLD))
     print(c("  Loading models (first run downloads ~750MB)...", DIM))
 
     load_start = time.perf_counter()

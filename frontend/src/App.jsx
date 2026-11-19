@@ -102,7 +102,7 @@ export default function App() {
     <div className="app">
       <header className="header">
         <div className="logo">PARALLEL<span>AI</span></div>
-        <p className="tagline">neural claim verification · deberta-v3 · bayesian synthesis</p>
+        <p className="tagline">neural claim verification · deberta-v3 · credibility-weighted synthesis</p>
       </header>
 
       <main className="main">
