@@ -10,14 +10,12 @@
 #SBATCH --output=logs/train_%j.out
 #SBATCH --error=logs/train_%j.err
 #SBATCH --mail-type=END,FAIL
-#SBATCH --mail-user=munusamy.s@northeastern.edu
+#SBATCH --mail-user=YOUR_EMAIL
 
-# set -e turns a failed `conda activate` into an immediate, legible failure
-# instead of silently falling through to the wrong Python (see below: this
-# bit a real run on 2026-09-20 -- the script kept going after `conda activate`
-# failed and trained against the cluster's shared, ABI-mismatched numpy).
+# Replace YOUR_EMAIL above with your address before submitting.
 # #SBATCH directives must stay contiguous above this line with no shell
-# commands before them, or SLURM stops parsing them.
+# commands before them, or SLURM stops parsing them. set -e makes a failed
+# `conda activate` stop the job instead of falling through to the wrong Python.
 set -euo pipefail
 
 # ── Environment setup ────────────────────────────────────────────────────────
