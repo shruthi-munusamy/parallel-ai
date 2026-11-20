@@ -1,13 +1,8 @@
 # Parallel AI
 
-A fact-checking system that automates *lateral reading* — the method professional
-fact-checkers use: take a claim, search for what independent sources say about it,
-read what each source actually argues, weigh those sources by how trustworthy they
-are, and report a verdict that stays traceable to the text it came from.
+A fact-checking system that automates *lateral reading*, the method professional fact-checkers use. It takes a claim, searches for what independent sources say about it, scores what each source actually argues, weighs those sources by credibility, and returns a verdict that traces back to the exact sentences it came from.
 
-Every verdict is grounded in retrieved passages. Nothing is generated from model
-memory, so there is no hallucination surface: if the system cannot find evidence,
-it says `INSUFFICIENT` rather than inventing a conclusion.
+Verdicts come only from retrieved text. The LLM writes search queries and never produces the verdict, so if the system finds no usable evidence, it returns `INSUFFICIENT` instead of guessing.
 
 ```
 POST /verify  {"claim": "Vaccines cause autism"}
@@ -22,7 +17,14 @@ REFUTES  conf 0.79  cred 0.92  thelancet.com
   scored: "No causal link between the MMR vaccine and autism was established."
 ```
 
----
+## Results
+
+| | Result |
+|---|---|
+| Stance model accuracy, held-out FEVER + VitaminC (1,000 examples) | **86.9%** accuracy, **0.838** macro-F1 |
+| Calibration (expected calibration error) | 0.049 → **0.021** after temperature scaling |
+| End-to-end accuracy on LIAR claims given a verdict (36 claims, rule-based query decomposition) | 27% → **63%** after fixing a prediction bias, with coverage 61% → 44% |
+| Mean latency, 10 demo claims (CPU, offline corpus) | **1.78 s** (p95 3.37 s) |
 
 ## Quick start
 
@@ -32,19 +34,16 @@ cp .env.example .env          # optional: add API keys
 python -m backend.main        # http://localhost:8000/docs
 ```
 
-The API keys are **optional**. Without them the system runs end to end against a
-built-in offline corpus and labels every response `mock_search: true`, so a demo
-run can never be mistaken for a live one.
+The API keys are optional. Without them, the system runs end to end on a built-in offline corpus and labels every response `mock_search: true`, so a demo run can never be mistaken for a live one.
 
 | Key | Effect when absent |
 |---|---|
 | `TAVILY_API_KEY` | Falls back to the offline corpus in `backend/services/mock_corpus.py` |
 | `ANTHROPIC_API_KEY` | Falls back to rule-based query decomposition |
 
-First run downloads ~750MB of model weights and takes a few minutes; afterwards
-startup is about 2 seconds.
+The first run downloads about 750 MB of model weights and takes a few minutes. After that, startup takes about 2 seconds.
 
-**Demo** — runs ten curated claims and prints a scored report:
+**Demo.** Runs ten curated claims and prints a scored report:
 
 ```bash
 python demo_script.py                 # all cases in data/test_cases.json
@@ -61,181 +60,93 @@ cd frontend && npm install && npm run dev   # http://localhost:3000
 **Tests**
 
 ```bash
-python -m pytest              # 113 tests, ~30s
-python -m pytest -m "not slow"  # skip the ones that load model weights
+python -m pytest                  # 177 tests
+python -m pytest -m "not slow"    # skip the tests that load model weights
 ```
-
----
 
 ## How it works
 
 ```
 claim
   │
-  ├─ 0. ClaimWorthinessChecker ── rejects opinions/predictions/questions
+  ├─ 0. ClaimWorthinessChecker ── rejects opinions, predictions, and questions
   │                               before any search runs
-  ├─ 1. QueryDecomposer ──── Claude generates 5 distinct sub-queries,
-  │                          deliberately including refutation-seeking ones
-  ├─ 2. SearchService ────── all sub-queries run concurrently, merged by URL
-  ├─ 3. EvidenceRetriever ── pages fetched concurrently, split into passages,
-  │                          ranked by embedding similarity, then reranked by
-  │                          a cross-encoder for the final selection
+  ├─ 1. QueryDecomposer ──── Claude writes 5 distinct sub-queries,
+  │                          including ones that look for refutations
+  ├─ 2. SearchService ────── runs all sub-queries concurrently, merges by URL
+  ├─ 3. EvidenceRetriever ── fetches pages concurrently, splits them into passages,
+  │                          ranks by embedding similarity, then reranks
+  │                          with a cross-encoder
   ├─ 4. StanceDetector ───── DeBERTa NLI per sentence, MC-dropout uncertainty
-  ├─ 5. CredibilityScorer ── domain authority prior  (runs concurrently with 4)
+  ├─ 5. CredibilityScorer ── domain credibility score (runs concurrently with 4)
   └─ 6. Synthesizer ─────── credibility-weighted verdict
   │
 verdict + evidence + confidence + uncertainty
 ```
 
-Full rationale for each stage is in [ARCHITECTURE.md](ARCHITECTURE.md).
+The reasoning behind each stage is in [ARCHITECTURE.md](ARCHITECTURE.md).
 
----
+## What went wrong and how I fixed it
 
-## The three decisions that matter
-
-### DeBERTa NLI, not an LLM, for stance detection
-
-Stance detection is a calibrated 3-way classification that runs dozens of times
-per claim. A fine-tuned encoder is the right tool: it is faster, cheaper per
-call, returns a probability distribution you can threshold and propagate, and
-cannot hallucinate a citation. An LLM is the right tool for query decomposition —
-open-ended generation, no labeled data, once per claim — which is exactly where
-this system uses one.
-
-The split is the point: **specialized model for the hot classification path,
-general model for the cold generative path.**
-
-### Credibility as a weight, not a filter
-
-Most NLI fact-checkers treat source quality as a gate ("drop anything below
-0.5"). That discards signal and behaves erratically at the boundary. Here
-credibility multiplies evidence weight during aggregation:
-
-```
-weight_i = stance_confidence_i × credibility_i × recency_i
-```
-
-A PubMed paper refuting at 0.60 confidence (0.95 × 0.60 = **0.57**) outweighs a
-blog supporting at 0.85 (0.35 × 0.85 = **0.30**). Averaging confidence alone
-would return the opposite verdict. This case is asserted directly in
-`tests/test_synthesizer.py`.
-
-`recency_i` is an exponential half-life decay on publication date (5-year
-half-life, floored at 0.3 so an old source is dampened, never discarded — an
-old source can still be correct about a stable fact). Missing or unparseable
-dates score 1.0, not a penalty. See `ARCHITECTURE.md` §7.4.
-
-`credibility_i` is a small hand-curated tier list for sources this project
-specifically vetted, backed by two open datasets for everything else:
-[CRED-1](https://github.com/aloth/cred-1) (`data/cred1_compact.json`, CC BY
-4.0 — ~2,700 known misinformation domains) for the low end, and
-[WP:RSP](https://en.wikipedia.org/wiki/Wikipedia:Reliable_sources/Perennial_sources)
-(`data/rsp_compact.json`, CC BY-SA 4.0 — ~750 community-rated sources,
-covering *both* ends) for the positive end CRED-1 can't reach. See
-`ARCHITECTURE.md` §7.1 for why NewsGuard and Media Bias/Fact Check weren't
-options, and how the two datasets are layered.
-
-### Sentence-level stance scoring
-
-This one came out of measurement, not design. The NLI checkpoints are MNLI-trained,
-where premises are single sentences. Feed them a real multi-sentence web passage
-and they collapse to `NEUTRAL` with near-1.0 confidence even when one sentence
-plainly decides the claim:
+**Multi-sentence passages always read as neutral.** The NLI models are trained on MNLI, where each premise is a single sentence. Given a real multi-sentence web passage, they returned `NEUTRAL` with near-total confidence even when one sentence clearly decided the claim:
 
 | Premise | Result |
 |---|---|
 | Full 2-sentence passage | `NEUTRAL` 0.999 |
 | Same content, one sentence | `SUPPORTS` 0.964 |
 
-So stance is scored per sentence and aggregated by **max over directional
-sentences**: a source refutes a claim if *any* sentence in it refutes the claim,
-even when the surrounding text is background. Averaging would let three neutral
-sentences of context bury the one sentence carrying the evidence.
+I switched to scoring each sentence separately and taking the strongest directional sentence as the passage's stance, since averaging would let a few neutral background sentences bury the one that carries the evidence. On the ten demo claims, before fine-tuning or calibration, this raised agreement from 4/10 to 8/10. It also made every verdict explainable: the deciding sentence is returned as `stance_sentence` and shown in the UI.
 
-On the ten demo claims (measured pre-calibration, `STANCE_TEMPERATURE=1.0`,
-zero-shot checkpoint) this moved agreement from 4/10 to 8/10. It also made
-the system explainable — the deciding sentence is returned as
-`stance_sentence` and displayed in the UI, so every badge is traceable to
-specific text.
+**The full pipeline leaned toward one label.** The stance model scored well on its own benchmark, but running the whole system on 36 claims from the LIAR benchmark showed a heavy bias toward one verdict: only 27% of the claims it gave a verdict were correct (6 of 22). After finding and fixing the cause, accuracy on claims given a verdict rose to 63% (10 of 16). Coverage fell from 61% to 44%, because borderline claims that used to get a confident wrong verdict now return `INSUFFICIENT`. Both runs used rule-based query decomposition. To reproduce it, download LIAR using the instructions in `data/liar/README`.
 
----
+**Training bugs caught before they cost GPU time.** Before every long cluster run, I train for one epoch on a small slice. That habit caught three dependency and API breaks and a silent float16 bug that produced NaN loss, all before they could waste hours on the cluster:
 
-## Uncertainty
+```bash
+MAX_TRAIN_SAMPLES=200 MAX_VAL_SAMPLES=60 TRAIN_EPOCHS=1 EVAL_STEPS=3 \
+  python -m backend.training.train_stance
+```
 
-Raw softmax confidence is poorly calibrated — a model can be confidently
-wrong — in two distinct ways, handled by two different mechanisms:
+## Design decisions
 
-**Epistemic (does the model know?).** Each prediction runs `MC_SAMPLES`
-forward passes with dropout left enabled, which approximates sampling from
-the posterior over weights. The spread across those samples is reported as
-`uncertainty`, separately from `confidence`. **"The model says neutral"** and
-**"the model does not know"** are different statements, and a reader deserves
-to see which one they got. Uncertainty discounts the final verdict
-confidence, capped at 50% so model instability can never erase a genuine
-evidence majority. `MC_SAMPLES` is the main latency dial in the system — cost
-is linear in it.
+**A fine-tuned encoder for stance, an LLM for queries.** Stance detection is a 3-way classification that runs dozens of times per claim. A fine-tuned encoder is faster and cheaper per call, returns a probability distribution I can threshold and calibrate, and cannot invent a citation. Query decomposition is open-ended generation that runs once per claim with no labeled data, which is where an LLM fits.
 
-**Calibration (when the model says 90%, is it right 90% of the time?).**
-Separately, softmax confidence from an untuned model is systematically
-overconfident regardless of MC dropout. `backend/training/calibrate_temperature.py`
-fits a single softmax temperature (Guo et al. 2017) against a held-out
-FEVER+VitaminC sample — a scalar that divides logits before softmax, which
-softens confidence without changing which class wins. Fit on 2026-09-23
-against the fine-tuned checkpoint (below), 1000 held-out examples:
+**Credibility as a weight, not a filter.** Many fact-checkers drop sources below a credibility cutoff, which throws away evidence and behaves unpredictably near the boundary. Here, credibility multiplies each passage's weight:
+
+```
+weight_i = stance_confidence_i × credibility_i × recency_i
+```
+
+A PubMed paper refuting at 0.60 confidence (0.95 × 0.60 = **0.57**) outweighs a blog supporting at 0.85 (0.35 × 0.85 = **0.30**). Averaging confidence alone would return the opposite verdict. `tests/test_synthesizer.py` checks this case directly.
+
+`recency_i` decays with a 5-year half-life and never drops below 0.3, so an old source is down-weighted but never discarded, since it can still be right about a stable fact. Missing or unreadable dates score 1.0 rather than being penalized.
+
+## Uncertainty and calibration
+
+**Does the model know?** Each prediction runs `MC_SAMPLES` forward passes with dropout left on, and the spread across them is reported as `uncertainty`, separately from `confidence`. "The model says neutral" and "the model is unsure" are different statements, and the response shows which one applies. Uncertainty lowers the final verdict confidence by at most 50%, so model instability can never erase a clear majority of evidence. `MC_SAMPLES` is the main latency setting, with cost growing linearly.
+
+**Is the confidence honest?** Softmax confidence tends to be overconfident. `backend/training/calibrate_temperature.py` fits a single temperature (Guo et al., 2017) on 1,000 held-out FEVER + VitaminC examples. Dividing the logits by it softens confidence without changing which class wins.
 
 | | Before | After |
 |---|---|---|
-| Expected Calibration Error | 0.049 | 0.021 |
+| Expected calibration error | 0.049 | 0.021 |
 
-For comparison, the zero-shot fallback checkpoint measured ECE 0.387 → 0.078
-on the same test — fine-tuning made the model dramatically better calibrated
-on its own, before any temperature scaling at all.
-
-`STANCE_TEMPERATURE=1.49` is the current default (`.env`). This value is
-specific to the current `STANCE_CHECKPOINT` and **must be recalibrated**
-whenever that checkpoint is retrained or replaced — a different model has a
-different confidence/accuracy relationship.
-
----
+The zero-shot checkpoint measured 0.387 → 0.078 on the same test, so fine-tuning alone made the model far better calibrated before any temperature scaling. The fitted value, `STANCE_TEMPERATURE=1.49`, is set in `.env` and applies only to the current checkpoint, so recalibrate whenever the checkpoint changes.
 
 ## Measured performance
 
-**Stance detector accuracy on held-out FEVER+VitaminC** (the actual benchmark
-number, not the demo regression check): fine-tuned DeBERTa-v3-base,
-1000-example validation sample, measured 2026-09-23 —
+**Stance model**, fine-tuned DeBERTa-v3-base, 1,000 held-out FEVER + VitaminC examples:
 
 | Metric | Value |
 |---|---|
 | Accuracy | **86.9%** |
-| Macro F1 | **0.838** |
+| Macro-F1 | **0.838** |
 | F1, REFUTES | 0.870 |
 | F1, NOT ENOUGH INFO | 0.717 |
 | F1, SUPPORTS | 0.927 |
 
-Trained on Northeastern's Explorer SLURM cluster (Tesla V100), stopped early
-by `EarlyStoppingCallback` around epoch 1.2 of 3 once macro F1 stopped
-improving. Full run details in `backend/training/train_stance.py` and
-`ARCHITECTURE.md` §10.
+Trained on Northeastern's Explorer SLURM cluster (Tesla V100). Early stopping ended training around epoch 1.2 of 3, once macro-F1 stopped improving.
 
-**End-to-end verdict accuracy against real PolitiFact rulings** (the whole
-assembled pipeline, not the classifier alone), measured 2026-10-01 against
-96 stratified LIAR claims (`backend/eval/eval_liar.py`) —
-
-| Metric | First pass | After the fix |
-|---|---|---|
-| Coverage (claims given a directional verdict) | 57% (55/96) | 44% (matched 36-claim subset) |
-| Accuracy on directional | 29% | **63%** |
-
-The first-pass number was real and not flattering — more informative than
-the classifier-only 86.9% for exactly that reason: it showed a strong,
-diagnosed `SUPPORTED` bias (76% of directional calls, including 14/32
-pants-fire/false claims) rather than random error, something a classifier-
-only benchmark can't surface. Root cause and the fix that more than doubled
-accuracy on a matched subset (at the honest cost of some coverage — the
-system got more conservative, which is the right trade for a fact-checker)
-are in `ARCHITECTURE.md` §12 and §12.1.
-
-CPU (M-series), offline corpus, `MC_SAMPLES=5`, fine-tuned checkpoint, cross-encoder reranking on:
+**Pipeline latency** on CPU (M-series), offline corpus, `MC_SAMPLES=5`, fine-tuned checkpoint, reranking on:
 
 | Metric | Value |
 |---|---|
@@ -245,11 +156,9 @@ CPU (M-series), offline corpus, `MC_SAMPLES=5`, fine-tuned checkpoint, cross-enc
 | Model load at startup | ~2 s (after first download) |
 | Verdict agreement, 10 demo claims | **8/10** |
 
-Mean latency was 0.95s before reranking was added (`RERANK_ENABLED=false`) —
-the reranker's cost is a deliberate accuracy/latency tradeoff (§5.5 in
-ARCHITECTURE.md), not a regression.
+Without reranking (`RERANK_ENABLED=false`), mean latency is 0.95 s. I kept the reranker because the accuracy gain is worth the extra time.
 
-Stance stage in isolation, 30 passages:
+**Stance stage alone**, 30 passages:
 
 | `MC_SAMPLES` | Time | Per passage |
 |---|---|---|
@@ -257,46 +166,37 @@ Stance stage in isolation, 30 passages:
 | 5 *(default)* | 3.7 s | 124 ms |
 | 1 *(no uncertainty)* | 0.6 s | 19 ms |
 
-Two caveats, stated plainly:
+Two caveats:
 
-- **The 8/10 is not a benchmark** — the FEVER+VitaminC numbers above are. Ten
-  demo claims, labels are the author's reading of the evidence, and the
-  offline corpus was written by the author. It is a regression check against
-  known cases, not an accuracy measurement.
-- **Latency excludes live page fetching.** With `TAVILY_API_KEY` set, stage 3
-  fetches real pages; that adds network time bounded by `FETCH_TIMEOUT_S` (8s
-  default) and `FETCH_CONCURRENCY` (10), not by the number of sources.
-
----
+- **The 8/10 is a regression check, not a benchmark.** The ten demo claims, their labels, and the offline corpus were all written by me. The FEVER + VitaminC and LIAR numbers are the real measurements.
+- **Latency excludes live page fetching.** With `TAVILY_API_KEY` set, stage 3 fetches real pages, which adds network time bounded by `FETCH_TIMEOUT_S` (8 s default) and `FETCH_CONCURRENCY` (10).
 
 ## Reliability
 
 Every stage degrades instead of failing:
 
-| Failure | Behaviour |
+| Failure | Behavior |
 |---|---|
 | No search API key | Offline corpus, response flagged `mock_search: true` |
 | No LLM key | Rule-based query decomposition |
-| Search provider down | Returns `[]`; one bad sub-query cannot abort the request |
-| Page fetch fails / times out | Falls back to the search snippet for that source |
-| Stance model raises | `NEUTRAL` at uncertainty 1.0 — the synthesizer reads it as no signal |
+| Search provider down | Returns `[]`, so one bad sub-query cannot abort the request |
+| Page fetch fails or times out | Falls back to the search snippet for that source |
+| Stance model raises an error | `NEUTRAL` at uncertainty 1.0, which the synthesizer treats as no signal |
 | No usable evidence | `INSUFFICIENT` at confidence 0.0, never a guess |
-| Claim is an opinion, prediction, or question | `UNCHECKABLE` at confidence 0.0 — rejected before any search runs |
+| Claim is an opinion, prediction, or question | `UNCHECKABLE` at confidence 0.0, rejected before any search runs |
 
-Covered by `TestResilience` in `tests/test_integration.py`.
-
----
+`TestResilience` in `tests/test_integration.py` covers each case.
 
 ## API
 
 | Endpoint | Purpose |
 |---|---|
-| `GET /health` | Readiness, checkpoint, device, and which degraded modes are active |
+| `GET /health` | Readiness, checkpoint, device, and which fallback modes are active |
 | `POST /verify` | Verify a claim |
 | `GET /cache/stats` | Hit rate, entries, evictions |
-| `POST /cache/clear` | Flush the cache |
+| `POST /cache/clear` | Clear the cache |
 
-Interactive docs at `/docs`.
+Interactive docs are at `/docs`.
 
 <details>
 <summary><code>POST /verify</code> response schema</summary>
@@ -305,7 +205,7 @@ Interactive docs at `/docs`.
 {
   "claim": "Vaccines cause autism",
   "verdict": "REFUTED",              // SUPPORTED | REFUTED | MIXED | INSUFFICIENT | UNCHECKABLE
-  "confidence": 0.82,                // uncertainty-discounted
+  "confidence": 0.82,                // after the uncertainty discount
   "uncertainty": 0.14,               // mean MC-dropout spread
   "evidence": [
     {
@@ -313,7 +213,7 @@ Interactive docs at `/docs`.
       "source_title": "Vaccines do not cause autism",
       "excerpt": "...",
       "stance": "REFUTES",           // SUPPORTS | REFUTES | NEUTRAL
-      "stance_sentence": "Multiple large-scale studies...",  // what was scored
+      "stance_sentence": "Multiple large-scale studies...",  // the sentence that was scored
       "stance_confidence": 0.99,
       "uncertainty": 0.03,
       "credibility_score": 0.92,
@@ -332,130 +232,82 @@ Interactive docs at `/docs`.
 }
 ```
 
-Evidence is sorted by `stance_confidence × credibility_score` — the exact
-quantity the synthesizer aggregated — so the ordering reflects what actually
-drove the verdict.
-</details>
+Evidence is sorted by `stance_confidence × credibility_score × recency`, the same weight the synthesizer uses, so the order reflects what actually drove the verdict.
 
----
+</details>
 
 ## Configuration
 
-All settings live in `backend/config.py` and are overridable via `.env`. The ones
-worth knowing:
+All settings live in `backend/config.py` and can be overridden in `.env`. The most useful ones:
 
 | Variable | Default | Effect |
 |---|---|---|
-| `MC_SAMPLES` | `5` | Uncertainty passes. Linear latency cost; `1` disables uncertainty |
+| `MC_SAMPLES` | `5` | Uncertainty passes. Latency grows linearly; `1` disables uncertainty |
 | `SENTENCE_LEVEL_STANCE` | `true` | Per-sentence scoring (see above) |
-| `UNRELATED_THRESHOLD` | `0.40` | Below this, a passage is dropped as `UNRELATED` |
+| `UNRELATED_THRESHOLD` | `0.40` | Passages below this are dropped as `UNRELATED` |
 | `FETCH_CONCURRENCY` | `10` | Parallel page fetches |
-| `RERANK_ENABLED` | `true` | Cross-encoder reranking over bi-encoder candidates; `false` skips it |
+| `RERANK_ENABLED` | `true` | Cross-encoder reranking; `false` skips it |
 | `STANCE_CHECKPOINT` | `./checkpoints/stance_deberta` | Fine-tuned weights; falls back to zero-shot when absent |
-| `STANCE_TEMPERATURE` | `1.0` | Softmax temperature; see Calibration above. Recalibrate when `STANCE_CHECKPOINT` changes |
+| `STANCE_TEMPERATURE` | `1.0` in code, `1.49` in `.env` | Softmax temperature (see Calibration). Recalibrate when the checkpoint changes |
 | `CACHE_TTL_S` | `3600` | Result cache lifetime |
-
----
 
 ## Fine-tuning
 
-`backend/training/train_stance.py` fine-tunes DeBERTa-v3 on FEVER + VitaminC.
-VitaminC matters specifically because it trains robustness to counterfactual
-edits — *"aspirin reduces fever"* versus *"aspirin does not reduce fever"* — which
-is the dominant failure mode of NLI models on real fact-checking. That failure
-mode is case 7 in `data/test_cases.json`.
+`backend/training/train_stance.py` fine-tunes DeBERTa-v3 on FEVER + VitaminC. VitaminC matters because it trains the model on minimal edits like *"aspirin reduces fever"* vs. *"aspirin does not reduce fever"*, the most common way NLI models fail at real fact-checking. That failure is case 7 in `data/test_cases.json`.
 
 ```bash
 pip install datasets accelerate sentencepiece protobuf
 python -m backend.training.train_stance
 ```
 
-Drop the resulting checkpoint at `./checkpoints/stance_deberta` and the stance
-detector picks it up automatically — including its label ordering, which is read
-from the checkpoint's own `id2label` rather than assumed. Re-run
-`backend/training/calibrate_temperature.py` afterward — `STANCE_TEMPERATURE`
-is fit per checkpoint, and the current default is only valid for the specific
-checkpoint currently in `./checkpoints/stance_deberta`.
+Place the resulting checkpoint at `./checkpoints/stance_deberta` and the stance detector loads it automatically, reading the label order from the checkpoint's own `id2label` instead of assuming it. Then rerun `backend/training/calibrate_temperature.py`, since the temperature is fit per checkpoint.
 
-The full run needs a GPU; on a SLURM cluster (e.g. Northeastern's
-Explorer/Discovery), run `bash backend/training/setup_explorer_env.sh` once to
-create the conda environment, then `sbatch backend/training/submit_explorer.sh`.
-
-Before a long unattended run, smoke-test on a slice — this is also how three
-dependency/API breaks and a silent float16-NaN-loss bug were caught before
-they could burn hours of GPU time:
-
-```bash
-MAX_TRAIN_SAMPLES=200 MAX_VAL_SAMPLES=60 TRAIN_EPOCHS=1 EVAL_STEPS=3 \
-  python -m backend.training.train_stance
-```
-
-**Run 2026-09-23** on Northeastern's Explorer SLURM cluster (Tesla V100):
-86.9% accuracy / 0.838 macro F1 on 1000 held-out FEVER+VitaminC examples,
-stopped early around epoch 1.2 of 3 — see Measured performance above and
-`ARCHITECTURE.md` §10 for the full numbers and what a defensible benchmark
-number would still require (published fact-checker rulings, not just FEVER).
-
----
+The full run needs a GPU. On a SLURM cluster such as Northeastern's Explorer, run `bash backend/training/setup_explorer_env.sh` once to create the conda environment, set your email in `backend/training/submit_explorer.sh`, then run `sbatch backend/training/submit_explorer.sh`.
 
 ## Project layout
 
 ```
 backend/
-  config.py               single source of truth; loads .env on import
-  main.py                 FastAPI app, pipeline orchestration
+  config.py                   settings, loaded from .env on import
+  main.py                     FastAPI app and pipeline orchestration
   models/
-    query_decomposer.py   claim -> sub-queries (LLM, rule-based fallback)
-    retriever.py          concurrent fetch, passage split, semantic ranking
-    stance_detector.py    DeBERTa NLI, MC dropout, sentence-level aggregation
-    credibility_scorer.py domain authority tiers
-    synthesizer.py        credibility-weighted aggregation
+    claim_worthiness.py       rejects opinions, predictions, and questions
+    query_decomposer.py       claim -> sub-queries (LLM, rule-based fallback)
+    retriever.py              concurrent fetch, passage splitting, semantic ranking
+    stance_detector.py        DeBERTa NLI, MC dropout, sentence-level aggregation
+    credibility_scorer.py     domain credibility (tiers, CRED-1, WP:RSP, TLD)
+    synthesizer.py            credibility-weighted aggregation
   services/
-    search_service.py     Tavily, with offline fallback
-    mock_corpus.py        offline corpus, both sides of every topic
-    cache_service.py      TTL + LRU
+    search_service.py         Tavily, with offline fallback
+    mock_corpus.py            offline corpus covering both sides of every topic
+    cache_service.py          TTL + LRU cache
   training/
-    train_stance.py       FEVER + VitaminC fine-tuning
+    train_stance.py           FEVER + VitaminC fine-tuning
+    calibrate_temperature.py  temperature scaling on held-out examples
+    setup_explorer_env.sh     one-time conda setup on a SLURM cluster
+    submit_explorer.sh        SLURM job for the full training run
+  eval/
+    eval_liar.py              end-to-end eval against LIAR (PolitiFact rulings)
   utils/
-    logging_config.py     request-id correlation
-frontend/                 React + Vite
-tests/                    113 tests
-data/test_cases.json      10 curated claims
-demo_script.py            scored report over those claims
+    logging_config.py         request-ID logging
+frontend/                     React + Vite
+tests/                        177 tests
+data/
+  test_cases.json             10 curated claims
+  cred1_compact.json          CRED-1 domain credibility data
+  rsp_compact.json            WP:RSP domain reliability data
+  liar/                       LIAR eval results; TSV download steps in its README
+demo_script.py                scored report over the curated claims
 ```
-
----
 
 ## Known limitations
 
-- **Zero-shot stance detection is the accuracy ceiling.** Sentence-level scoring
-  mitigates the MNLI domain shift but does not remove it; some clear entailments
-  still read as `NEUTRAL` when the claim and the source phrase a concept
-  differently ("climate change" vs "the observed warming"). Fine-tuning on FEVER
-  is the real fix.
-- **Sentence-level scoring had a real, measured failure mode — found and
-  largely fixed.** The end-to-end eval against LIAR (see Measured Performance
-  above) found both retrieval and aggregation favoring a sentence that merely
-  *restates* a false claim over the source's actual verdict. Fixed in both
-  places (`ARCHITECTURE.md` §12.1): accuracy on a matched subset went
-  27% → 63%. Not a complete fix — REFUTED/MIXED recall is still well below
-  SUPPORTED's, and n=36 is still a modest validation sample.
-- **Credibility scoring is dataset-backed now, but still domain-level, not
-  article-level.** CRED-1 and WP:RSP (see `ARCHITECTURE.md` §7.1) cover known
-  misinformation and community-rated reliability respectively, but neither
-  knows that a given journal retracted a specific paper, or that a reputable
-  outlet ran one bad story — the score is still a property of the domain, not
-  the individual passage.
-- **The cache is per-process.** Multi-worker deployment needs Redis; the async
-  interface is already the right shape for that swap.
-- **No claim-worthiness check.** Opinions and predictions are processed as if
-  they were falsifiable factual claims.
+- **Phrasing mismatches.** Sentence-level scoring reduces the MNLI domain gap but does not remove it. Some clear entailments still read as `NEUTRAL` when the claim and the source describe the same idea differently ("climate change" vs. "the observed warming").
+- **Credibility is a static domain list.** Scores come from curated tiers, CRED-1, and WP:RSP, with a TLD heuristic as the fallback. A domain-level score cannot know that a journal retracted a paper or that a reputable outlet ran a bad story.
+- **The cache is per-process.** Running multiple workers would need Redis, and the cache's async interface is already shaped for that swap.
+- **Small end-to-end test sets.** The LIAR check covers 36 claims and the demo set covers 10, so the end-to-end numbers are directional. A stronger benchmark would use a larger set of published fact-checker rulings.
 
 ## Credits
 
-- Domain credibility data from [CRED-1](https://github.com/aloth/cred-1) by
-  Alexander Loth (CC BY 4.0), built from OpenSources.co (CC BY 4.0) by Melissa
-  Zimdars et al. and the Iffy.news Index (MIT).
-- Domain reliability data derived from Wikipedia's
-  [Reliable sources/Perennial sources](https://en.wikipedia.org/wiki/Wikipedia:Reliable_sources/Perennial_sources)
-  (WP:RSP), text available under CC BY-SA 4.0.
+- Domain credibility data from [CRED-1](https://github.com/aloth/cred-1) by Alexander Loth (CC BY 4.0), built from OpenSources.co (CC BY 4.0) by Melissa Zimdars et al. and the Iffy.news Index (MIT).
+- Domain reliability data derived from Wikipedia's [Reliable sources/Perennial sources](https://en.wikipedia.org/wiki/Wikipedia:Reliable_sources/Perennial_sources) (WP:RSP), text available under CC BY-SA 4.0.
