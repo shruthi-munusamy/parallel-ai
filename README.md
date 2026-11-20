@@ -2,6 +2,8 @@
 
 A fact-checking system that automates *lateral reading*, the method professional fact-checkers use. It takes a claim, searches for what independent sources say about it, scores what each source actually argues, weighs those sources by credibility, and returns a verdict that traces back to the exact sentences it came from.
 
+![Parallel AI demo](docs/demo.gif)
+
 Verdicts come only from retrieved text. The LLM writes search queries and never produces the verdict, so if the system finds no usable evidence, it returns `INSUFFICIENT` instead of guessing.
 
 ```
